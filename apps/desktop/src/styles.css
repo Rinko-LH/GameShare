@@ -104,6 +104,17 @@ body {
   height: 100%;
 }
 
+.view-opacity { display: flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text-dim); font-size: 11px; }
+.view-opacity input { width: 80px; accent-color: var(--accent); }
+.view-opacity > span:last-child { width: 32px; }
+.stage--tiles { position: relative; overflow: clip; }
+.stage--tiles > .grid, .stage--tiles > .stage--focused { position: absolute; inset: 0; opacity: 0; pointer-events: none; overflow: clip; }
+.tiles-control-notice { margin: auto; max-width: 460px; padding: 24px; text-align: center; }
+.tiles-control-notice h2 { color: var(--accent); }
+.tilewin__volume { display: flex; flex: 1; min-width: 0; max-width: 230px; align-items: center; gap: 6px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 6px; background: rgba(12,14,19,0.92); }
+.tilewin__volume input { flex: 1; width: 70px; min-width: 0; accent-color: var(--accent); }
+.tilewin__volume span { min-width: 28px; font-size: 10px; }
+
 /* ---------------- header ---------------- */
 
 /* 顶栏压到 44px 左右：它是固定的，每省 10px 都是首屏能多放一行内容 */
@@ -1158,36 +1169,43 @@ body {
   right: 0;
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 7px;
+  gap: 8px;
+  padding: 7px 9px;
+  z-index: 3;
   background: linear-gradient(rgba(0, 0, 0, 0.72), transparent);
   font-size: 12px;
 }
 
 .tile__title {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   font-weight: 500;
 }
 
-/* 放大 / 还原：和静音开关同排，同样低调；正处于放大状态时用强调色标出来 */
+/* 可点击操作使用明确的矩形按钮，与底部纯文字状态区分。 */
 .tile__act {
   flex-shrink: 0;
-  padding: 1px 7px;
+  padding: 4px 10px;
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: 5px;
   background: rgba(15, 17, 21, 0.72);
   color: var(--text);
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .tile__act:hover {
   border-color: var(--accent);
+  background: var(--accent-dim);
 }
+
+.tile__act:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .tile__act--on {
   border-color: var(--accent);
@@ -1218,7 +1236,7 @@ body {
 
 /* ---------------- 分轨音量（阶段四） ---------------- */
 
-/* 「音量」按钮与展开的小面板。面板向上弹，别盖住画面主体 */
+/* 从顶栏向下展开，保持在画面内，并与音量按钮右侧对齐。 */
 .tile__volwrap {
   position: relative;
   flex-shrink: 0;
@@ -1226,13 +1244,14 @@ body {
 
 .tile__volpanel {
   position: absolute;
-  bottom: 26px;
-  left: 0;
+  top: calc(100% + 7px);
+  right: 0;
   z-index: 40;
   display: flex;
   flex-direction: column;
   gap: 7px;
-  min-width: 200px;
+  width: 220px;
+  max-width: calc(100cqw - 20px);
   padding: 9px 11px;
   border: 1px solid var(--border-strong);
   border-radius: 9px;
@@ -1255,14 +1274,13 @@ body {
 
 .tile__volrow input[type='range'] {
   flex: 1;
+  min-width: 0;
   accent-color: var(--accent);
 }
 
 .tile__voldown {
   flex-shrink: 0;
-  padding: 0 6px;
-  border: none;
-  background: none;
+  border-color: rgba(229, 100, 92, 0.6);
   color: #ff8a7f;
   font-family: inherit;
   font-size: 11px;
@@ -1314,11 +1332,9 @@ body {
   bottom: 0;
   left: 0;
   right: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 9px;
-  padding: 5px 7px;
+  display: grid;
+  gap: 5px;
+  padding: 16px 9px 7px;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
   color: #cfd5e0;
   /* 遥测数据用 HUD 显示字体：数字造型带电竞感，且等宽不跳动 */
@@ -1328,6 +1344,17 @@ body {
   letter-spacing: 0.5px;
   font-variant-numeric: tabular-nums;
 }
+
+.tile { container-type: inline-size; }
+.tile__statuses, .tile__metrics { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+.tile__statuses { font-family: 'Segoe UI', system-ui, 'Microsoft YaHei', sans-serif; font-weight: 400; letter-spacing: 0; }
+.tile__status { display: inline-flex; align-items: center; gap: 5px; color: var(--text-dim); cursor: default; }
+.tile__status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.tile__status--connected { color: var(--ok); }
+.tile__status--new, .tile__status--connecting { color: var(--warn); }
+.tile__status--failed, .tile__status--disconnected, .tile__status--closed { color: var(--err); }
+.tile__route--relay { color: var(--warn); }
+.tile__metrics { overflow-wrap: anywhere; }
 
 /* ---------------- 日志 ---------------- */
 
@@ -1391,6 +1418,9 @@ body {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
   padding: 4px;
+  /* 覆盖窄窗口媒体查询中的 overflow:auto，控制条与小球都不应滚动。 */
+  overflow: clip;
+  overscroll-behavior: none;
 }
 
 .app--float .app__stage {
@@ -1412,19 +1442,21 @@ body {
   border-radius: 5px;
 }
 
-/* 标签和底部统计默认隐形，鼠标移到那一格才出。
-   玩游戏时鼠标在游戏里，所以正常情况下浮窗上不会挂着一排字挡画面。 */
+/* 标签和底部统计默认隐藏，鼠标悬停或键盘焦点时显示。
+   不用 focus-within：鼠标点击后保留的焦点会让控件在移开鼠标后仍然常驻。 */
 .app--float .tile__header,
 .app--float .tile__footer {
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.15s ease;
 }
 
 .app--float .tile:hover .tile__header,
 .app--float .tile:hover .tile__footer,
-.app--float .tile:focus-within .tile__header,
-.app--float .tile:focus-within .tile__footer {
+.app--float .tile:has(:focus-visible) .tile__header,
+.app--float .tile:has(:focus-visible) .tile__footer {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .app--float .tile__title,
@@ -1437,6 +1469,11 @@ body {
 
 .app--float .tile__footer {
   padding: 3px 6px;
+}
+
+/* 只移动覆盖层中的画面按钮，视频布局始终铺满，不为隐藏工具栏留空行。 */
+.app--float .app__stage:has(> .floatbar) .tile__header {
+  top: var(--float-toolbar-inset, 44px);
 }
 
 /* 放大态在浮窗里：底边缩略条按浮窗的尺度来，
@@ -1462,7 +1499,7 @@ body {
  *    就是纯 hover，`Ctrl+Alt+G` 退出兜底，`.floatgrip`（右下角）也是常驻的，
  *    缩放不依赖 hover。
  *
- * 位置贴右上角：窄窗里居中会被 `max-width` 夹得没法看。
+ * 覆盖在画面顶部，不占布局高度；画面按钮按测量高度避让，窄窗可折行。
  */
 .floatbar {
   position: absolute;
@@ -1491,7 +1528,8 @@ body {
 
 /* 鼠标进到浮窗里就显现 —— 「拆分」「退出」这些功能不该藏在第二次点击后面。
    整块画面区都在 hover 容器里，从画面滑到条上不会中途消失。 */
-.app__stage:hover .floatbar {
+.app__stage:hover .floatbar,
+.app__stage:has(:focus-visible) .floatbar {
   opacity: 1;
   pointer-events: auto;
   transform: translateX(0);
@@ -1671,6 +1709,8 @@ body {
   inset: 0;
   opacity: 0;
   pointer-events: none;
+  /* 视频保持播放，但其内部布局不能撑出控制条的滚动范围。 */
+  overflow: clip;
 }
 
 /* 「把整条收掉」那个动作。与其余按钮同款，只是窄一点 —— 它是视图操作，

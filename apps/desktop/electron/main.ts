@@ -160,6 +160,8 @@ function createMainWindow(): BrowserWindow {
       // preload 需要读取 process.versions 等 Node 信息，
       // 后续 M2 接入 desktopCapturer 也会走 IPC，这里保持 sandbox 关闭。
       sandbox: false,
+      // 主窗口预览隐藏或最小化时，仍要持续为独立浮窗解码并传送视频帧。
+      backgroundThrottling: false,
     },
   });
 

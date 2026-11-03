@@ -12,6 +12,12 @@
 export type Lang = 'zh' | 'en';
 
 const ZH = {
+  'view.fullscreen': '全屏模式',
+  'view.mainViewHint': '收起侧栏并放大一路共享画面；再次点击恢复侧栏和网格，窗口大小保持不变',
+  'view.opacity': '全部浮窗透明度',
+  'view.floatingActive': '正在使用独立浮窗',
+  'view.floatingCount': '当前显示 {n} 个成员画面浮窗',
+  'view.floatingHint': '在主窗口统一调整浮窗透明度，在各浮窗内单独调整成员音量。主窗口保留控制，预览已隐藏；关闭浮窗模式可恢复主窗口预览。',
   'status.host.idle': '尚未创建房间',
   'status.host.creating': '正在创建房间',
   'status.host.waiting': '房间已创建 · 等待朋友',
@@ -162,8 +168,8 @@ const ZH = {
   'share.noSources': '没有可用的窗口或屏幕。',
   'share.needRoom': '进入房间后才能共享',
   'share.enumerate': '枚举窗口 / 屏幕',
-  'share.testSource': '合成源',
-  'share.testSourceTitle': '用合成的动画画面代替真实采集，便于自动化验证链路',
+  'share.testSource': '测试源',
+  'share.testSourceTitle': '播放测试画面和测试音，用于检查共享效果，无需采集真实屏幕',
 
   /* 音频失败告警 */
   'audioFail.title': '无法捕获此应用声音。',
@@ -279,8 +285,6 @@ const ZH = {
   'tile.tagLocal': '本地',
   'tile.tagNotSharing': '未共享',
   'tile.tagNoAudio': '无声音',
-  'tile.tagVoice': '语音',
-  'tile.tagAppAudio': '共享声',
   'tile.restore': '还原',
   'tile.enlarge': '放大',
   'tile.focusTitle': '双击放大 / 还原',
@@ -295,10 +299,12 @@ const ZH = {
   'tile.muteAppAudioTitle': '只静音他的共享声音，不影响语音',
   'tile.pathDetecting': '路径检测中',
   'tile.statsCollecting': '统计采集中…',
+  'tile.localPreviewInfo': '本地预览 · 不经过网络传输',
   'tile.selfTitle': '{name}（本地预览）',
 
   /* 小窗（FloatTile） */
   'tileFloat.defaultPeer': '对端',
+  'tileFloat.volumeTitle': '只调整你听到的这位成员的音量',
   'tileFloat.waiting': '等待画面…',
   'tileFloat.muted': '已静音',
   'tileFloat.live': '有声',
@@ -312,6 +318,12 @@ export type I18nKey = keyof typeof ZH;
 type Dict = Record<I18nKey, string>;
 
 const EN: Dict = {
+  'view.fullscreen': 'Wide view',
+  'view.mainViewHint': 'Hide the sidebar and enlarge a shared view; click again to restore the sidebar and grid without resizing the window',
+  'view.opacity': 'All floating windows opacity',
+  'view.floatingActive': 'Independent floating windows are active',
+  'view.floatingCount': '{n} shared views are open',
+  'view.floatingHint': 'Adjust opacity in the main window and member volume in each floating window. The main window keeps its controls with previews hidden. Turn off floating mode to restore previews.',
   'status.host.idle': 'No room created',
   'status.host.creating': 'Creating room',
   'status.host.waiting': 'Room created · Waiting for friends',
@@ -552,8 +564,6 @@ const EN: Dict = {
   'tile.tagLocal': 'Local',
   'tile.tagNotSharing': 'Not sharing',
   'tile.tagNoAudio': 'No audio',
-  'tile.tagVoice': 'Voice',
-  'tile.tagAppAudio': 'App audio',
   'tile.restore': 'Restore',
   'tile.enlarge': 'Enlarge',
   'tile.focusTitle': 'Double-click to enlarge / restore',
@@ -568,9 +578,11 @@ const EN: Dict = {
   'tile.muteAppAudioTitle': 'Mute only their app audio, voice unaffected',
   'tile.pathDetecting': 'detecting path…',
   'tile.statsCollecting': 'gathering stats…',
+  'tile.localPreviewInfo': 'Local preview · No network transmission',
   'tile.selfTitle': '{name} (local preview)',
 
   'tileFloat.defaultPeer': 'Peer',
+  'tileFloat.volumeTitle': 'Adjust this member’s volume for your local playback only',
   'tileFloat.waiting': 'Waiting for stream…',
   'tileFloat.muted': 'Muted',
   'tileFloat.live': 'Sound on',

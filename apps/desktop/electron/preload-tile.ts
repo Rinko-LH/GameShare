@@ -13,6 +13,8 @@ import { ipcRenderer } from 'electron';
  */
 
 export interface TilePortMessage {
+  volume: number;
+  muted: boolean;
   index: number;
   peerId: string;
   /**
@@ -25,6 +27,8 @@ export interface TilePortMessage {
 }
 
 export interface TileApi {
+  setVolume(peerId: string, volume: number): void;
+  onVolume(callback: (volume: number) => void): () => void;
   /** 接收帧通道。返回取消订阅函数。**晚注册也能拿到已到达的通道**（见下） */
   onPort(callback: (port: MessagePort, meta: TilePortMessage) => void): () => void;
   /** 请求主窗口把这一路静音（声音在主窗口出，小窗只是开关） */
@@ -51,6 +55,12 @@ export interface TileApi {
 const received: Array<{ port: MessagePort; meta: TilePortMessage }> = [];
 const portListeners = new Set<(port: MessagePort, meta: TilePortMessage) => void>();
 const mutedListeners = new Set<(muted: boolean) => void>();
+const volumeListeners = new Set<(volume: number) => void>();
+let lastVolume: number | null = null;
+ipcRenderer.on('float:tile-volume', (_event, volume: number) => {
+  lastVolume = volume;
+  for (const listener of volumeListeners) listener(volume);
+});
 
 ipcRenderer.on('float:tile-port', (event, meta: TilePortMessage) => {
   const port = (event as { ports?: MessagePort[] })?.ports?.[0];
@@ -65,6 +75,12 @@ ipcRenderer.on('float:tile-muted', (_event, muted: boolean) => {
 });
 
 const api: TileApi = {
+  setVolume(peerId, volume) { ipcRenderer.send('float:tile-set-volume', { peerId, volume }); },
+  onVolume(callback) {
+    volumeListeners.add(callback);
+    if (lastVolume !== null) callback(lastVolume);
+    return () => { volumeListeners.delete(callback); };
+  },
   onPort(callback) {
     portListeners.add(callback);
     for (const entry of received) callback(entry.port, entry.meta);

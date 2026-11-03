@@ -15,7 +15,6 @@ import type {
 } from './types/global';
 import type { LinkStats, RemoteTracks } from './rtc/types';
 import type { LinkDiagnosis } from './rtc/PeerLink';
-import { floatBallProps, floatDragProps, floatGripProps } from './float-drag';
 import { ShareSession } from './session/ShareSession';
 import { IpConnectPanel } from './IpConnectPanel';
 import { ModeChooser } from './ModeChooser';
@@ -90,6 +89,8 @@ function DIAG_TITLE(d: LinkDiagnosis): string {
  * 音量只作用于本机 `<audio>` 元素，不发信令、不影响别人。
  */
 interface PeerAudioPref {
+  masterVol: number;
+  masterMuted: boolean;
   voiceVol: number;
   voiceMuted: boolean;
   appVol: number;
@@ -97,6 +98,8 @@ interface PeerAudioPref {
 }
 
 const DEFAULT_PEER_AUDIO: PeerAudioPref = {
+  masterVol: 1,
+  masterMuted: false,
   voiceVol: 1,
   voiceMuted: false,
   appVol: 1,
@@ -179,14 +182,9 @@ export default function App() {
    * 一起收掉，两条状态得分别同步。
    */
   const [tiles, setTiles] = useState<FloatTilesStatus | null>(null);
-  const [tilesBusy, setTilesBusy] = useState(false);
 
-  /**
-   * 画面区的实际像素尺寸。浮窗模式下按它算「几行几列能让每格最接近 16:9」——
-   * 常规模式的网格每格写死最小 280x160，窗口缩小时不跟着缩，会撑破容器。
-   */
+  /** 主窗口画面区；独立浮窗时保留隐藏视频层供帧泵取帧。 */
   const stageRef = useRef<HTMLDivElement | null>(null);
-  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
 
   /* ---- 左侧折叠状态：默认全收，让核心操作在首屏就能看到 ---- */
   const [serverOpen, setServerOpen] = useState(false);
@@ -255,7 +253,6 @@ export default function App() {
    * 之所以按「人」而不是按「窗口」静音，是因为 Windows 的 loopback 采的
    * 是整机混音 —— 一路共享里本来就只有一个人的全部声音，分不出来。
    */
-  const [mutedPeers, setMutedPeers] = useState<ReadonlySet<string>>(() => new Set());
 
   /**
    * 远端分轨音量偏好（peerId → 偏好）。没出现的 peer 用 `DEFAULT_PEER_AUDIO`。
@@ -562,6 +559,29 @@ export default function App() {
 
   const isFloat = floatWindow?.enabled === true;
 
+  useEffect(() => {
+    if (!isFloat) return;
+    setSideCollapsed(false);
+    window.localStorage.setItem('gs.sidebarCollapsed', '0');
+  }, [isFloat]);
+
+  const handleMainView = async () => {
+    setFloatBusy(true);
+    try {
+      if (isFloat && window.gameShare?.windowMode) setFloatWindow(await window.gameShare.windowMode.setEnabled(false));
+      const collapsed = isFloat || !sideCollapsed;
+      if (collapsed) {
+        const selected = room?.peers.find((peer) => peer.peerId === focusedPeerId && remoteSharing[peer.peerId]);
+        const firstSharing = room?.peers.find((peer) => remoteSharing[peer.peerId]);
+        setFocusedPeerId((selected ?? firstSharing)?.peerId ?? null);
+      } else {
+        setFocusedPeerId(null);
+      }
+      setSideCollapsed(collapsed);
+      window.localStorage.setItem('gs.sidebarCollapsed', collapsed ? '1' : '0');
+    } finally { setFloatBusy(false); }
+  };
+
   const handleToggleFloat = useCallback(async (enabled: boolean): Promise<void> => {
     const api = window.gameShare?.windowMode;
     if (!api) return;
@@ -582,23 +602,6 @@ export default function App() {
     if (!api) return;
     setFloatWindow(await api.setOpacity(value));
   }, []);
-
-  /**
-   * 浮窗模式下测量画面区的像素尺寸，用来算行列数。
-   *
-   * 只在浮窗模式观察：常规模式的网格是 CSS 响应式布局（自己会排），
-   * 用不上这个，白挂一个观察器只是浪费。
-   */
-  useEffect(() => {
-    const el = stageRef.current;
-    if (!el || !isFloat) return undefined;
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (rect) setStageSize({ width: rect.width, height: rect.height });
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [isFloat]);
 
   /**
    * 复制一条完整的邀请信息。
@@ -965,11 +968,9 @@ export default function App() {
   /* ---------------- 静音 ---------------- */
 
   const toggleMute = useCallback((peerId: string): void => {
-    setMutedPeers((prev) => {
-      const next = new Set(prev);
-      if (next.has(peerId)) next.delete(peerId);
-      else next.add(peerId);
-      return next;
+    setPeerAudio((prev) => {
+      const pref = prev[peerId] ?? DEFAULT_PEER_AUDIO;
+      return { ...prev, [peerId]: { ...pref, masterMuted: !pref.masterMuted } };
     });
   }, []);
 
@@ -1001,7 +1002,7 @@ export default function App() {
   /**
    * 双击放大规则（对应 ARCHITECTURE.md 4.10）：
    * - 双击任意远端画面进入单路主画面，其余收进底部缩略条
-   * - 再双击主画面、按 Esc、或点缩略条里的任意一路都会切换回去
+   * - 再双击主画面或按 Esc 恢复网格；双击缩略图切换主画面
    * - 同时只允许放大一路；本地预览不可放大（看自己没有意义）
    * - 画质联动见下面的 effect
    */
@@ -1179,14 +1180,9 @@ export default function App() {
     [isFloat, remotePeers, remoteSharing],
   );
 
-  /** 浮窗里的行列数：在给定容器里挑一个让每格最接近 16:9 的排法 */
-  const floatGrid = useMemo(
-    () => pickFloatGrid(stageSize.width, stageSize.height, floatPeers.length),
-    [stageSize, floatPeers.length],
-  );
 
   /* ------------------------------------------------------------------ *
-   * 拆分模式（浮窗的子模式）：每一路远端画面拆成一个可独立拖动的小窗
+   * 独立浮窗：每一路正在共享的远端画面对应一个可独立拖动的小窗
    *
    * 窗数是**总人数 − 1**（自己那一路本地预览就能看，不必再为它开一个窗）。
    * 窗口本身由主进程创建和摆放（见 `electron/float-tiles.ts`），渲染层只做两件事：
@@ -1196,9 +1192,8 @@ export default function App() {
    *      过不了进程边界，实测见 float-tiles.ts 顶部），画面只能由主窗口从自己的
    *      `<video>` 里抽帧、缩放成 `ImageBitmap`、经 MessagePort 搬过去。
    *
-   * 代价写在明处：**画面和声音都只能从主窗口出发**，所以拆分之后主窗口会被收成
-   * 一条贴屏幕底部的窄控制条，不能关也不能最小化 —— 它同时是这台机器的
-   * 「声音 + 房间码 + 合并按钮」。见下面 hostbar 那段。
+   * 主窗口隐藏视频预览但持续解码和播放音频，独立小窗只显示视频帧。
+   * 主窗口关闭时必须关闭全部小窗；离房或停止共享时按清单清理。
    * ------------------------------------------------------------------ */
 
   /**
@@ -1320,15 +1315,20 @@ export default function App() {
     return api.onToggleMuteRequest((peerId) => toggleMute(peerId));
   }, [toggleMute]);
 
+  useEffect(() => window.gameShare?.floatTiles.onVolumeRequest?.(({ peerId, volume }) => {
+    setPeerAudio((prev) => ({ ...prev, [peerId]: { ...(prev[peerId] ?? DEFAULT_PEER_AUDIO), masterVol: volume } }));
+  }), []);
+
   /** 要报给主进程的对端清单：顺序即位置，静音状态一起带上（小窗上的按钮照着它显示） */
   const tilePeersPayload = useCallback(
-    (): Array<{ peerId: string; name: string; muted: boolean }> =>
+    (): Array<{ peerId: string; name: string; muted: boolean; volume: number }> =>
       floatPeers.map((peer) => ({
         peerId: peer.peerId,
         name: peer.nickname,
-        muted: mutedPeers.has(peer.peerId),
+        muted: peerAudioOf(peer.peerId).masterMuted,
+        volume: peerAudioOf(peer.peerId).masterVol,
       })),
-    [floatPeers, mutedPeers],
+    [floatPeers, peerAudioOf],
   );
 
   /**
@@ -1338,57 +1338,11 @@ export default function App() {
    * （重建会丢掉用户拖出来的位置）。所以这里可以放心地每次重报一遍。
    */
   useEffect(() => {
-    if (!splitActive || !inRoom) return;
+    if (!splitActive) return;
     const api = window.gameShare?.floatTiles;
     if (!api) return;
-    void api.syncPeers(tilePeersPayload()).then(setTiles);
+    void api.syncPeers(inRoom ? tilePeersPayload() : []).then(setTiles);
   }, [splitActive, inRoom, tilePeersPayload]);
-
-  const handleToggleTiles = useCallback(
-    async (enabled: boolean): Promise<void> => {
-      const api = window.gameShare?.floatTiles;
-      if (!api) return;
-      setTilesBusy(true);
-      try {
-        if (enabled) {
-          // 先喂清单再开模式：主进程开模式时会立刻按清单建窗，反过来的话会先开成
-          // 一个「一个窗都没有」的空状态，小窗要等下一轮广播才出来。
-          await api.syncPeers(tilePeersPayload());
-        }
-        setTiles(await api.setEnabled(enabled));
-      } finally {
-        setTilesBusy(false);
-      }
-    },
-    [tilePeersPayload],
-  );
-
-  /**
-   * 收起 / 展开那条控制条（缩成贴右下角的一颗小球）。
-   *
-   * **界面不自己先切**：窗口尺寸是主进程改的，先切成小球会出现一帧「小球画在一条
-   * 620x76 的窗口里」。等 `float:tiles-status` 把 `barCollapsed` 推回来再切 ——
-   * `invoke` 的返回值就是新状态，所以这一句就够了（广播那份是幂等的）。
-   */
-  const handleToggleBarCollapsed = useCallback(async (collapsed: boolean): Promise<void> => {
-    const api = window.gameShare?.floatTiles;
-    if (!api) return;
-    setTiles(await api.setBarCollapsed(collapsed));
-  }, []);
-
-  /** 收起态：主窗口已经缩成右下角那颗小球了 */
-  const barCollapsed = splitActive && tiles?.barCollapsed === true;
-
-  /**
-   * 小球上的拖动 props：**按住能拖，松手没动过就算点了一下**（展开）。
-   *
-   * 锁住引用是为了让拖动期间拿到的一直是同一份（拖动状态在模块级，不影响正确性，
-   * 只是不给它每次渲染都换一个闭包）。
-   */
-  const ballDragProps = useMemo(
-    () => floatBallProps(() => void handleToggleBarCollapsed(false)),
-    [handleToggleBarCollapsed],
-  );
 
   /**
    * 帧泵：把主窗口里每一路的画面按小窗的尺寸抽帧送过去。
@@ -1527,7 +1481,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className={isFloat ? 'app app--float' : 'app'}>
+    <div className={`app${isFloat ? ' app--tiles' : ''}`}>
       {/*
         远端语音 / 应用声音的播放器。
 
@@ -1571,7 +1525,7 @@ export default function App() {
           {/* 浮窗模式：全屏游戏时用。快捷键在主进程里全局注册，这里只管显示状态。
               多开客户端时快捷键只有一个窗口抢得到，抢不到就如实标出来 ——
               否则用户按了没反应，只会以为是软件坏了。
-              进浮窗后这条顶栏整个会藏起来，退出走快捷键或画面上的悬浮控件。 */}
+              主窗口一直保留完整控制界面，只有独立小窗置顶。 */}
           {floatWindow && (
             <label
               className="switch switch--boxed"
@@ -1597,6 +1551,11 @@ export default function App() {
               )}
             </label>
           )}
+
+          {floatWindow && <>
+            <button type="button" className={`btn btn--tiny${!isFloat && sideCollapsed ? ' btn--primary' : ''}`} aria-pressed={!isFloat && sideCollapsed} title={t('view.mainViewHint')} disabled={floatBusy} onClick={() => void handleMainView()}>{t('view.fullscreen')}</button>
+
+          </>}
 
           <div className={`status status--${headerStatus.tone}`} title={headerStatus.detail || (connectionRole === 'host' ? t('status.host.title') : t('status.guest.title'))}>
             <span className="status__dot" />
@@ -1641,17 +1600,19 @@ export default function App() {
         className="app__body"
         style={
           // 常规模式：三列（侧栏宽可拖拽调、收起时切两列）。
-          // 浮窗模式**必须不输出**——浮窗 CSS 的单列模板优先级低于内联样式，
-          // 一旦内联，side/resizer 隐藏后 stage 会掉进 300px 的第一列（实测踩过）。
-          isFloat
-            ? undefined
-            : {
-                gridTemplateColumns: sideCollapsed ? '6px 1fr' : `${sideWidth}px 6px 1fr`,
-              }
+          { gridTemplateColumns: sideCollapsed ? '6px 1fr' : `${sideWidth}px 6px 1fr` }
         }
       >
         {!sideCollapsed && (
         <div className="app__side">
+          {isFloat && floatWindow && <section className="panel panel--tight">
+            <h2>{t('float.mode')}</h2>
+            <label className="view-opacity"><span>{t('view.opacity')}</span>
+              <input aria-label={t('view.opacity')} type="range" min={Math.round(floatWindow.minOpacity * 100)} max={100} step={5} value={Math.round(floatWindow.opacity * 100)} onChange={(e) => void handleOpacity(Number(e.target.value) / 100)} />
+              <span>{Math.round(floatWindow.opacity * 100)}%</span>
+            </label>
+          </section>}
+
           {!inRoom && <label className="panel panel--tight ip-connect__field"><span className="hint">你的昵称（可不填）</span>
             <input className="field__input field__input--compact" value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={16} disabled={busy} placeholder="朋友会看到的名字" />
           </label>}
@@ -2407,205 +2368,20 @@ export default function App() {
             收起成小球时换成 `ballDragProps`：同样是拖动，但多了一条「没动过就算点一下」
             （整块都是拖动区，没法在上面另挖一个按钮出来）。 */}
         <div
-          className="app__stage"
+          className={`app__stage${isFloat ? " stage--tiles" : ""}`}
           ref={stageRef}
-          {...(isFloat ? (barCollapsed ? ballDragProps : floatDragProps) : null)}
         >
-          {/* 浮窗的控件条：鼠标进到浮窗里 hover 显现，移开收走（2026-09-21 定稿）。
-
-              演化史，别倒退回去：
-              ① 原先挂在 `isFloat` 分支里，被前面的 `!inRoom` 空态整块接走，
-                 浮窗成了没有控件的空壳，退出只能靠 `Ctrl+Alt+G`（实机踩到）；
-              ② 于是控件挪到分支链外面 + 常驻小方块当入口（「只在 hover 出现
-                 等于没有」的教训，判据见 4.13.1 的小窗名字牌）；
-              ③ 常驻入口用起来「还得多点一次才知道有拆分」，改为 hover 显现
-                 + 按钮钉住；实测后发现钉住场景站不住（调滑杆时鼠标本来就在
-                 条上），按钮整个删掉 —— 现在就是纯 hover，`Ctrl+Alt+G` 兜底。 */}
-          {isFloat && !splitActive && (
-            <>
-              <div className="floatbar">
-                {/* 同一个拖动把手。`frame: false` 之后标题栏没了，这块画面区就是
-                    唯一的拖动区 —— 摆个把手，别让人靠猜。 */}
-                <span className="bar__grip" title={t('float.barGripTitle')} />
-                <span className="floatbar__label">{t('float.opacity')}</span>
-                <input
-                  type="range"
-                  className="floatbar__range"
-                  min={Math.round((floatWindow?.minOpacity ?? 0.3) * 100)}
-                  max={100}
-                  step={5}
-                  value={Math.round((floatWindow?.opacity ?? 1) * 100)}
-                  onChange={(e) => void handleOpacity(Number(e.target.value) / 100)}
-                  title={t('float.opacityTitle')}
-                />
-                <span className="floatbar__value">
-                  {Math.round((floatWindow?.opacity ?? 1) * 100)}%
-                </span>
-                {/* 拆分的入口只放在这里，不放顶栏：浮窗模式下顶栏整个是藏起来的，
-                    而那正是唯一用得着它的场景 —— 摆在看不见的地方等于没有。 */}
-                {floatPeers.length > 0 && (
-                  <button
-                    type="button"
-                    className="floatbar__exit"
-                    onClick={() => void handleToggleTiles(true)}
-                    disabled={tilesBusy}
-                    title={fmt('float.splitTitle', { n: floatPeers.length })}
-                  >
-                    {fmt('float.split', { n: floatPeers.length })}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="floatbar__exit"
-                  onClick={() => void handleToggleFloat(false)}
-                  title={t('float.exitTitle')}
-                >
-                  {t('float.exit')}
-                </button>
-              </div>
-
-              {/* 缩放手柄。窗口是 `setFocusable(false)` 的：原生边框的拖动与缩放都要先
-                  激活窗口，在非激活窗口上一条都不成立 —— 所以自己画一个，而且要**看得见**：
-                  自绘控件没人试过就等于不存在。所以它**常驻半透明**，
-                  不再是 hover 才露头（那只有老手才知道能缩放）。拆分模式下不给它
-                  （那时主窗口被收成固定高度的控制条，改高度没有意义）。 */}
-              <div className="floatgrip" title={t('float.gripTitle')} {...floatGripProps} />
-            </>
-          )}
+          {isFloat && inRoom && <div className="tiles-control-notice">
+            <h2>{t('view.floatingActive')}</h2>
+            <p>{fmt('view.floatingCount', { n: tiles?.tiles.length ?? 0 })}</p>
+            <p className="hint">{t('view.floatingHint')}</p>
+          </div>}
           {!inRoom ? (
             <div className="stage__empty">
               <h2>和朋友一起看，一起玩</h2>
               <p>① 选择连接方式 → ② 创建或加入房间 → ③ 选择屏幕开始共享</p>
               <p className="hint hint--dim">从左侧开始。加入房间后，朋友共享的画面会显示在这里。</p>
             </div>
-          ) : isFloat && splitActive ? (
-            /* 拆分模式：主窗口已经被主进程收成一条贴底的窄控制条（620x76）。
-               它不能关也不能最小化 —— **画面和声音都还在这个窗口里出**
-               （音轨同样过不了小窗），下面那层看不见的画面就是帧泵的源。
-               控件在这里是常驻可见的：一条只为控件而存在的条，再把控件藏起来
-               就本末倒置了（不像下面那个浮窗悬浮条要靠 hover 才出）。 */
-            <>
-              {barCollapsed ? (
-                /* 收起态：窗口只有 152x40，整窗就是这颗球。
-                    
-                    它上面**不放按钮** —— `.app__stage` 整块是拖动区，按钮吃掉哪一块，
-                    哪一块就变成「从这儿开始拖不动」（和小窗名字牌同一种坑）。
-                    所以展开靠「按位移判点击」：按住没动过 = 点了一下 = 展开，
-                    动过 = 拖动（float-drag.ts 的 `floatBallProps`，悬浮球都是这个交互）。 */
-                <div className="hostball" title={t('bar.ballTitle')}>
-                  <span className="hostball__dot" />
-                  <span className="hostball__text">{fmt('bar.ballTiles', { n: tiles?.tiles.length ?? 0 })}</span>
-                  <span className="hostball__expand">{t('bar.ballExpand')}</span>
-                </div>
-              ) : (
-                <div className="hostbar">
-                  {/* 看得见的拖动把手。
-
-                      整条本来就能拖（`.app__stage` 挂着 floatDragProps），但「能拖」这件事
-                      得有人告诉用户：窗口现在是 `frame: false` 的，**没有标题栏可拖了**，
-                      不摆个把手，用户只会继续以为拖不动（2026-09-17 两次实机反馈都卡在这）。 */}
-                  <span className="bar__grip" title={t('bar.gripTitle')} />
-                  {/* 收起入口。摆在这条最前面：它是个「把整条收掉」的动作，
-                      贴在条的头上有「折起来」的语感；摆到末尾会和「合并/退出」混成一排。 */}
-                  <button
-                    type="button"
-                    className="hostbar__act hostbar__collapse"
-                    onClick={() => void handleToggleBarCollapsed(true)}
-                    title={t('bar.collapseTitle')}
-                  >
-                    {t('bar.collapse')}
-                  </button>
-                  {room && (
-                    <span className="hostbar__code" title={t('room.codePlaceholder')}>
-                      {room.roomCode}
-                    </span>
-                  )}
-                  <span className="hostbar__hint">
-                    {fmt('bar.tilesInfo', { n: tiles?.tiles.length ?? 0 })}
-                  </span>
-                  <span className="hostbar__label">{t('bar.opacity')}</span>
-                  <input
-                    type="range"
-                    className="hostbar__range"
-                    min={Math.round((floatWindow?.minOpacity ?? 0.3) * 100)}
-                    max={100}
-                    step={5}
-                    value={Math.round((floatWindow?.opacity ?? 1) * 100)}
-                    onChange={(e) => void handleOpacity(Number(e.target.value) / 100)}
-                    title={t('bar.opacityTitle')}
-                  />
-                  <span className="hostbar__value">
-                    {Math.round((floatWindow?.opacity ?? 1) * 100)}%
-                  </span>
-                  <button
-                    type="button"
-                    className="hostbar__act hostbar__act--primary"
-                    onClick={() => void handleToggleTiles(false)}
-                    disabled={tilesBusy}
-                    title={t('bar.mergeTitle')}
-                  >
-                    {t('bar.merge')}
-                  </button>
-                  <button
-                    type="button"
-                    className="hostbar__act"
-                    onClick={() => void handleToggleFloat(false)}
-                    title={t('bar.exitTitle')}
-                  >
-                    {t('bar.exit')}
-                  </button>
-                </div>
-              )}
-
-              {/* 画面留在这层继续播：**声音是从这里出的**，帧泵也从这里抽帧。
-                  视觉上收掉只用 opacity:0，别改 display:none —— 后者会让这层整个退出布局。
-                  （2026-09-17 复跑探针：合成源下连 display:none 都照样出帧，所以这是
-                  **保守选择**而不是实测结论；真实解码源没验过，别去试。） */}
-              <div className="hostbar__videos" aria-hidden="true">
-                <div className="floatgrid">
-                  {floatPeers.map((peer) => renderRemoteTile(peer, 'grid'))}
-                </div>
-              </div>
-            </>
-          ) : isFloat ? (
-            /* 浮窗模式：只剩画面本身。控件**不在这里** —— 它们挂在分支链外面
-               （见上面那段注释）。挂在分支里的时候，压在它前面的
-               `!inRoom` 会在「还没进房」时把整块接走，浮窗就成了一个控件都没有的空壳，
-               想退出去只剩快捷键（2026-09-18 实机反馈的正是这个）。 */
-            <>
-
-              {floatPeers.length === 0 ? (
-                <div className="stage__empty">
-                  <p>{t('float.emptyNoShare')}</p>
-                  <p className="hint hint--dim">{t('float.emptyOnlyShared')}</p>
-                </div>
-              ) : focusedPeerId && floatPeers.some((p) => p.peerId === focusedPeerId) ? (
-                /* 放大态：主画面吃满，其余几路缩成底边一条。
-                   注意这里重排的只是**窗口内部**的比例，窗口尺寸不变。 */
-                <div className="stage stage--focused stage--float">
-                  <div className="stage__main">
-                    {floatPeers
-                      .filter((p) => p.peerId === focusedPeerId)
-                      .map((p) => renderRemoteTile(p, 'main'))}
-                  </div>
-                  <div className="stage__strip">
-                    {floatPeers
-                      .filter((p) => p.peerId !== focusedPeerId)
-                      .map((p) => renderRemoteTile(p, 'thumb'))}
-                  </div>
-                </div>
-              ) : (
-                <div
-                  className="floatgrid"
-                  style={{
-                    gridTemplateColumns: `repeat(${floatGrid.cols}, minmax(0, 1fr))`,
-                    gridTemplateRows: `repeat(${floatGrid.rows}, minmax(0, 1fr))`,
-                  }}
-                >
-                  {floatPeers.map((peer) => renderRemoteTile(peer, 'grid'))}
-                </div>
-              )}
-            </>
           ) : focusedPeerId ? (
             <div className="stage stage--focused">
               <div className="stage__main">
@@ -2759,7 +2535,7 @@ function VideoTile({
    * （不静就会同一路播两遍）。
    */
   const noRoleAudio = voiceTrack === null && appAudioTrack === null;
-  const bothMuted = Boolean(audioPref && audioPref.voiceMuted && audioPref.appMuted);
+  const bothMuted = Boolean(audioPref && (audioPref.masterMuted || (audioPref.voiceMuted && audioPref.appMuted)));
   useEffect(() => {
     if (ref.current) ref.current.muted = self ? true : !noRoleAudio || bothMuted;
   }, [self, noRoleAudio, bothMuted]);
@@ -2777,10 +2553,7 @@ function VideoTile({
         onToggleFocus ? ' tile--clickable' : ''
       }`}
       onDoubleClick={onToggleFocus}
-      // 缩略条里单击就切过去 —— 那里每格只有 168x95，双击很难点准。
-      // 网格里保持双击，避免单击误触把别人的画面顶掉。
-      onClick={compact ? onToggleFocus : undefined}
-      title={onToggleFocus ? '双击放大 / 还原' : undefined}
+      title={onToggleFocus ? t('tile.focusTitle') : undefined}
     >
       {/*
         有角色音轨时把 video 元素静掉，声音交给 `RemoteAudioOutlet` 的两条 audio
@@ -2834,8 +2607,6 @@ function VideoTile({
 
       <div className="tile__header">
         <span className="tile__title">{title}</span>
-        {!compact && self && <span className="tag tag--live">{t('tile.tagLocal')}</span>}
-        {!compact && !self && !remoteSharing && <span className="tag">{t('tile.tagNotSharing')}</span>}
         {/* 放大不能只留双击：窗口刚被激活时第一次点击会被系统吞掉，
             双击就变成了「点了没反应」。给一个看得见的按钮，
             规则也从「得知道有这回事」变成「一眼能看见」。 */}
@@ -2853,8 +2624,6 @@ function VideoTile({
             {focused ? t('tile.restore') : t('tile.enlarge')}
           </button>
         )}
-        {!compact && !self && voiceTrack && <span className="tag tag--live">{t('tile.tagVoice')}</span>}
-        {!compact && !self && appAudioTrack && <span className="tag tag--live">{t('tile.tagAppAudio')}</span>}
         {!compact && !self && onToggleVolPanel && (voiceTrack || appAudioTrack) && (
           <div className="tile__volwrap">
             <button
@@ -2866,6 +2635,8 @@ function VideoTile({
               }}
               onDoubleClick={(e) => e.stopPropagation()}
               title={t('tile.volumeTitle')}
+              aria-label={t('tile.volumeTitle')}
+              aria-expanded={Boolean(volOpen)}
             >
               {t('tile.volume')}
             </button>
@@ -2884,7 +2655,7 @@ function VideoTile({
                     />
                     <button
                       type="button"
-                      className={audioPref.voiceMuted ? 'tile__voldown' : 'tag'}
+                      className={audioPref.voiceMuted ? 'tile__act tile__voldown' : 'tile__act'}
                       onClick={() => onAudioPref({ voiceMuted: !audioPref.voiceMuted })}
                       title={t('tile.muteVoiceTitle')}
                     >
@@ -2905,7 +2676,7 @@ function VideoTile({
                     />
                     <button
                       type="button"
-                      className={audioPref.appMuted ? 'tile__voldown' : 'tag'}
+                      className={audioPref.appMuted ? 'tile__act tile__voldown' : 'tile__act'}
                       onClick={() => onAudioPref({ appMuted: !audioPref.appMuted })}
                       title={t('tile.muteAppAudioTitle')}
                     >
@@ -2916,10 +2687,6 @@ function VideoTile({
               </div>
             )}
           </div>
-        )}
-        {!compact && !self && hasAudio === false && <span className="tag">{t('tile.tagNoAudio')}</span>}
-        {!compact && (
-          <span className={`tag tag--link-${linkState}`}>{LINK_LABEL[linkState] ? t(LINK_LABEL[linkState]) : linkState}</span>
         )}
         {/*
           缩略格只有 168x95，放不下一行说明 —— 但「为什么别人黑屏」这个问题
@@ -2938,14 +2705,27 @@ function VideoTile({
 
       {!compact && (
         <div className="tile__footer">
-          {inbound ? (
+          <div className="tile__statuses">
+            {self ? <span className="tile__status">{t('tile.tagLocal')}</span> : <>
+              <span className={`tile__status tile__status--${linkState}`}>
+                <span className="tile__status-dot" aria-hidden="true" />
+                {LINK_LABEL[linkState] ? t(LINK_LABEL[linkState]) : linkState}
+              </span>
+              {!remoteSharing && <span className="tile__status">{t('tile.tagNotSharing')}</span>}
+              {hasAudio === false && <span className="tile__status">{t('tile.tagNoAudio')}</span>}
+            </>}
+          </div>
+          <div className="tile__metrics">
+          {self ? (
+            <span className="hint hint--dim">{t('tile.localPreviewInfo')}</span>
+          ) : inbound ? (
             <>
               <span>
                 {inbound.frameWidth}x{inbound.frameHeight}
               </span>
               <span>{inbound.framesPerSecond} fps</span>
               <span>{formatBitrate(inbound.bitrateBps)}</span>
-              <span className={route?.relay ? 'tag tag--warn' : undefined}>
+              <span className={route?.relay ? 'tile__route--relay' : undefined}>
                 {route
                   ? route.relay
                     ? `TURN(${route.localType})`
@@ -2957,52 +2737,11 @@ function VideoTile({
           ) : (
             <span className="hint hint--dim">{detail || t('tile.statsCollecting')}</span>
           )}
+          </div>
         </div>
       )}
     </div>
   );
-}
-
-/**
- * 浮窗里的行列数。
- *
- * 常规模式的网格每格写死最小 280x160（见 styles.css 的 `.grid`），
- * 窗口一缩小格子不跟着缩、会撑破容器 —— 浮窗要的是「在给定的这块地方里，
- * 几行几列最合适」。判据是每格宽高比离 16:9 有多远。
- *
- * 用**对数比**而不是绝对差：宽高比 1.6 和 0.63 是同一种偏差（一个偏宽一个偏高），
- * 绝对差会把它们判成不同远近，于是竖排窗口可能被排成横排。
- *
- * 尺寸还没测出来时（首帧）先按单列返回，量到之后自然会重排。
- */
-function pickFloatGrid(
-  width: number,
-  height: number,
-  count: number,
-): { cols: number; rows: number } {
-  if (count <= 1 || width <= 0 || height <= 0) return { cols: 1, rows: Math.max(count, 1) };
-
-  const TARGET_ASPECT = 16 / 9;
-  /** 与 styles.css 里 .floatgrid 的 gap 保持一致 */
-  const GAP = 4;
-
-  let best = { cols: 1, rows: count };
-  let bestError = Number.POSITIVE_INFINITY;
-
-  for (let cols = 1; cols <= count; cols += 1) {
-    const rows = Math.ceil(count / cols);
-    const cellWidth = (width - GAP * (cols - 1)) / cols;
-    const cellHeight = (height - GAP * (rows - 1)) / rows;
-    if (cellWidth <= 0 || cellHeight <= 0) continue;
-
-    const error = Math.abs(Math.log(cellWidth / cellHeight / TARGET_ASPECT));
-    if (error < bestError) {
-      bestError = error;
-      best = { cols, rows };
-    }
-  }
-
-  return best;
 }
 
 function formatBitrate(bps: number): string {
@@ -3116,8 +2855,8 @@ function RemoteAudioPair({
    */
   useEffect(() => {
     const pairs: Array<[HTMLAudioElement | null, MediaStream | null, boolean, number]> = [
-      [voiceRef.current, voiceStream, pref.voiceMuted, pref.voiceVol],
-      [appAudioRef.current, appAudioStream, pref.appMuted, pref.appVol],
+      [voiceRef.current, voiceStream, pref.masterMuted || pref.voiceMuted, pref.voiceVol * pref.masterVol],
+      [appAudioRef.current, appAudioStream, pref.masterMuted || pref.appMuted, pref.appVol * pref.masterVol],
     ];
     for (const [el, nextStream, muted, volume] of pairs) {
       if (!el) continue;

@@ -31,6 +31,7 @@
     "check:media-tracks": "node scripts/check-media-tracks.mjs",
     "check:topmost": "node scripts/run-electron.cjs scripts/check-topmost.cjs",
     "check:tiles": "node scripts/run-electron.cjs scripts/check-float-tiles.cjs",
+    "check:views": "node scripts/check-view-modes.mjs",
     "check:standalone": "node scripts/check-standalone.mjs",
     "check:network": "node scripts/check-network.mjs",
     "check:stun": "node scripts/check-stun-chromium.mjs",

@@ -175,14 +175,14 @@ export interface TurnSaveResult {
  * 按本文件的一贯做法单独声明。
  */
 export interface FloatWindowStatus {
-  /** 是否处于浮窗模式（置顶 + 精简界面 + 可缩到很小） */
+  /** 是否打开独立浮窗；主窗口保持普通窗口布局 */
   enabled: boolean;
   /**
    * 是否处于**拆分**模式：每一路远端画面一个独立小窗（窗数 = 总人数 − 1）。
    * 只有浮窗模式开着时才可能为真 —— 拆分是浮窗的子模式。
    */
   tilesEnabled: boolean;
-  /** 浮窗模式下的不透明度（minOpacity~1）。非浮窗模式下窗口恒为 1 */
+  /** 所有独立浮窗的不透明度（minOpacity~1），不影响主窗口 */
   opacity: number;
   minOpacity: number;
   /** 全局快捷键在本进程是否注册成功。多开客户端时只有一个窗口能拿到 */
@@ -201,8 +201,6 @@ export interface FloatTileInfo {
 
 export interface FloatTilesStatus {
   enabled: boolean;
-  /** 控制条是否已收起成小球。界面按它决定画控制条还是画小球 */
-  barCollapsed: boolean;
   tiles: FloatTileInfo[];
 }
 
@@ -213,6 +211,8 @@ export interface FloatTilesStatus {
  * 靠自己收 MessagePort 画帧。类型这里单独声明，preload 与 renderer 分属两个 tsconfig。
  */
 export interface GameShareTileApi {
+  setVolume(peerId: string, volume: number): void;
+  onVolume(callback: (volume: number) => void): () => void;
   /**
    * 接收画面通道。
    *
@@ -220,7 +220,7 @@ export interface GameShareTileApi {
    * 而是重连一条新通道并把新身份一起送过来 —— 所以名字和 peerId 都要跟着它更新。
    */
   onPort(
-    callback: (port: MessagePort, meta: { index: number; peerId: string; name: string }) => void,
+    callback: (port: MessagePort, meta: { index: number; peerId: string; name: string; volume: number; muted: boolean }) => void,
   ): () => void;
   /** 请求主窗口把这一路静音（声音在主窗口出，小窗只是个开关） */
   toggleMute(peerId: string): void;
@@ -340,15 +340,8 @@ export interface GameShareApi {
    * 搬过去 —— `ipcRenderer` 的结构化克隆搬不了 `ImageBitmap`。
    */
   floatTiles: {
+    onVolumeRequest(callback: (data: { peerId: string; volume: number }) => void): () => void;
     getStatus(): Promise<FloatTilesStatus>;
-    setEnabled(enabled: boolean): Promise<FloatTilesStatus>;
-    /**
-     * 收起 / 展开那条控制条（缩成贴右下角的小球）。
-     *
-     * 界面**不能自己先切**成小球：窗口尺寸是主进程改的，先切会有一帧
-     * 「小球画在一条 620x76 的窗口里」。等 `onStatus` 把 `barCollapsed` 推回来再切。
-     */
-    setBarCollapsed(collapsed: boolean): Promise<FloatTilesStatus>;
     /**
      * 上报「每个对端开一个窗」。顺序即位置：index 0 是第一个对端。
      *
@@ -356,7 +349,7 @@ export interface GameShareApi {
      * 不带的话小窗会一直写着「有声」，点一下反而会放开用户已经静音的那一路。
      */
     syncPeers(
-      peers: Array<{ peerId: string; name: string; muted?: boolean }>,
+      peers: Array<{ peerId: string; name: string; muted?: boolean; volume?: number }>,
     ): Promise<FloatTilesStatus>;
     onStatus(callback: (status: FloatTilesStatus) => void): () => void;
     /** meta 里带序号与对端身份（`peerId` / `name`，换人后是新值） */

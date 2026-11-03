@@ -27,8 +27,8 @@ import path from 'node:path';
  * 这是「只能这么做」，不是「这么做更好」。
  *
  * 三个必须认下来的代价：
- * 1. **声音留在主窗口**（音轨同样过不去）。所以拆分后主窗口不能关也不能最小化，
- *    会被收成一条贴着屏幕底部的窄控制条 —— 它就是这台机器的「声音 + 房间码」。
+ * 1. **声音留在主窗口**（音轨同样过不去）。独立浮窗不复制音频播放器，主窗口
+ *    保留完整控制界面，隐藏画面预览但继续解码、出声和传送视频帧。
  * 2. **小窗里是 canvas 画的**，不是 `<video>`：拖大不会糊（每帧都从全分辨率重新缩放），
  *    但 video 元素自带的能力（右键菜单、系统控制条）都没有，得自绘。
  * 3. **每个小窗一个渲染进程**，内存各一份。本机同时开 4 个客户端做测试时，
@@ -37,7 +37,7 @@ import path from 'node:path';
  * ---------------------------------------------------------------------------
  * 顺序与生命周期
  *
- * 拆分是**浮窗模式的子模式**：只有浮窗模式开着才允许拆。退出浮窗时这里会被收起
+ * 浮窗模式直接为每一路正在共享的远端画面创建独立小窗。退出浮窗时这里会被收起
  * （`closeAllTiles()`，由 window-mode.ts 调用），否则会留下一堆无主的小窗。
  */
 
@@ -57,25 +57,8 @@ const TILE_WIDTH = 360;
 const TILE_MIN_WIDTH = 160;
 const TILE_MIN_HEIGHT = 90;
 
-/** 主窗口被收成的控制条尺寸 */
-const BAR_WIDTH = 620;
-const BAR_HEIGHT = 76;
-const BAR_MARGIN = 16;
-
-/**
- * 收起态：整条控制条缩成贴右下角的一小块（自绘的「悬浮球」）。
- *
- * 控制条 620x76 压在屏幕底部中央，玩游戏时正挡视线，而拆分模式下它**不能关** ——
- * 画面与声音都还在这个窗口里出。所以给它一个收起来的形态。
- *
- * 尺寸取「够放房间码 + 一眼看得出是个控件」。**再小就成了一颗纯色圆点**：
- * 说不出它是什么，用户下次也找不到它，那还不如不收。
- */
-const BALL_WIDTH = 152;
-const BALL_HEIGHT = 40;
-const BALL_MARGIN = 16;
-
 export interface TilePeer {
+  volume?: number;
   peerId: string;
   name: string;
   /** 本机是否已把这一路静音 —— 小窗上的按钮要跟它一致，否则会说反话 */
@@ -93,13 +76,12 @@ export interface TileInfo {
 export interface FloatTilesStatus {
   /** 是否处于拆分模式 */
   enabled: boolean;
-  /** 控制条是否已收起成小球（渲染层按它决定画哪一态） */
-  barCollapsed: boolean;
   /** 当前实际开着的每一个小窗（顺序即屏上顺序，index 即"第几个小窗"） */
   tiles: TileInfo[];
 }
 
 interface Tile {
+  volume: number;
   index: number;
   peerId: string;
   name: string;
@@ -115,20 +97,6 @@ let enabled = false;
 let wanted: TilePeer[] = [];
 let opacity = 1;
 let hostWindow: BrowserWindow | null = null;
-
-/** 主窗口被收成控制条之前的几何，退出拆分时还回去 */
-let hostRestoreBounds: Electron.Rectangle | null = null;
-
-/** 控制条是否处于收起态（小球） */
-let barCollapsed = false;
-
-/**
- * 收起**之前**那条控制条在哪。
- *
- * 展开要回到**用户自己挪到的位置**，不是回到底部居中 —— 他会把这条拖到不挡视线的
- * 地方（控制条上那个把手就是干这个的），展开时把它弹回屏幕底部正中等于把他刚做的事抹掉。
- */
-let hostExpandedBounds: Electron.Rectangle | null = null;
 
 /* ------------------------------------------------------------------ *
  * 小窗位置与尺寸的持久化
@@ -257,7 +225,7 @@ function connectTile(tile: Tile): void {
    * 身份就靠这条通道送过去：换人时 syncTiles 会重连通道，页面顺着这次重连拿到新身份。
    * 少了 name 的后果是「窗里换人了，悬浮条还挂着上一个人的名字」。
    */
-  const meta = { index: tile.index, peerId: tile.peerId, name: tile.name };
+  const meta = { index: tile.index, peerId: tile.peerId, name: tile.name, volume: tile.volume, muted: tile.muted };
 
   // 主窗口那侧是「帧泵」：拿到 port 就开始按源节奏往里灌画面
   hostWindow.webContents.postMessage('float:tile-port', meta, [port1]);
@@ -272,11 +240,6 @@ function notifyHost(channel: string, payload: unknown): void {
 function status(): FloatTilesStatus {
   return {
     enabled,
-    /**
-     * 控制条收起了没有。渲染层要靠它决定画「一条控制条」还是「一颗小球」——
-     * 页面里没有别的来源能知道这件事（窗口尺寸在两种形态下都合法）。
-     */
-    barCollapsed,
     tiles: [...tiles.values()]
       .sort((a, b) => a.index - b.index)
       .map((tile) => {
@@ -380,6 +343,7 @@ function createTile(index: number, peer: TilePeer): Tile {
     peerId: peer.peerId,
     name: peer.name,
     muted: peer.muted === true,
+    volume: peer.volume ?? 1,
     win,
     port: null,
   };
@@ -469,6 +433,11 @@ function syncTiles(next: TilePeer[]): FloatTilesStatus {
       connectTile(existing);
     }
     const muted = peer.muted === true;
+    const volume = peer.volume ?? 1;
+    if (existing.volume !== volume) {
+      existing.volume = volume;
+      if (!existing.win.isDestroyed()) existing.win.webContents.send('float:tile-volume', volume);
+    }
     if (existing.muted !== muted) {
       existing.muted = muted;
       if (!existing.win.isDestroyed()) existing.win.webContents.send('float:tile-muted', muted);
@@ -479,128 +448,17 @@ function syncTiles(next: TilePeer[]): FloatTilesStatus {
   return status();
 }
 
-/**
- * 浮窗模式那一档的最小尺寸，**必须与 window-mode.ts 的 `FLOAT_MIN_WIDTH/HEIGHT` 一致**。
- *
- * 刻意各存一份而不是从 window-mode 引过来：**那边已经 import 了本模块**，
- * 反向 import 会成环（同 `onTilesChanged` 那段注释的理由）。改一边要改另一边，
- * `npm run check:tiles` 里钉了一条断言盯着这两个数。
- */
-const HOST_FLOAT_MIN_WIDTH = 260;
-const HOST_FLOAT_MIN_HEIGHT = 150;
-
-/** 控制条展开态的几何：贴底居中，窄屏时跟着收窄 */
-function expandedBarBounds(): Electron.Rectangle {
-  const { workArea } = screen.getPrimaryDisplay();
-  const width = Math.min(BAR_WIDTH, Math.max(320, workArea.width - 40));
-  return {
-    x: workArea.x + Math.round((workArea.width - width) / 2),
-    y: workArea.y + workArea.height - BAR_HEIGHT - BAR_MARGIN,
-    width,
-    height: BAR_HEIGHT,
-  };
-}
-
-/**
- * 收起态的几何：贴屏幕**右下角**。
- *
- * 用 `workArea` 而不是屏幕 `bounds` —— 任务栏在底下，`bounds` 会让小球压到任务栏下面去。
- * 挑右下角是因为那是悬浮球的老位置，用户不用找。
- */
-function ballBounds(): Electron.Rectangle {
-  const { workArea } = screen.getPrimaryDisplay();
-  return {
-    x: workArea.x + workArea.width - BALL_WIDTH - BALL_MARGIN,
-    y: workArea.y + workArea.height - BALL_HEIGHT - BALL_MARGIN,
-    width: BALL_WIDTH,
-    height: BALL_HEIGHT,
-  };
-}
-
-/** 主窗口收成一条窄控制条：它就是「声音 + 房间码 + 合并按钮」 */
-function collapseHost(): void {
-  const win = hostWindow;
-  if (!win || win.isDestroyed()) return;
-  if (!hostRestoreBounds) hostRestoreBounds = win.getBounds();
-
-  barCollapsed = false;
-  hostExpandedBounds = null;
-
-  const bar = expandedBarBounds();
-
-  /**
-   * **先把下限放到这条控制条的高度，再落 bounds —— 顺序不能反。**
-   *
-   * 主窗口这时还带着浮窗那一档的下限（260x150，`enterFloat` 设的），
-   * 于是 `height: BAR_HEIGHT`（76）会被**静默夹回 150**：窗口比设计的高一倍，
-   * 控件垂直居中，控件下面空出一大块同色黑边 —— 看着像「这窗口坏了 / 拖不动」，
-   * 实际是尺寸被夹住了（2026-09-17 实测截图：620x150，不是 620x76）。
-   *
-   * 夹的动作不报错、`getBounds()` 也只有主动去问才看得出来，所以上一批的
-   * `check:tiles` 没接住它 —— 那一组的拆分是单独跑在空白页上的，
-   * **从没在「浮窗已经开着」的窗口上拆过**，而这两档下限只在那种情形下才打架。
-   *
-   * 第十一批又加了第三档（小球 152x40），同一个坑要防三次：收起时 40 高会被 76 夹、
-   * 152 宽会被 620 夹 —— 所以 `setBarCollapsed` 里也是「先 setMinimumSize 再 setBounds」。
-   */
-  win.setMinimumSize(bar.width, BAR_HEIGHT);
-  win.setBounds(bar);
-}
-
-/**
- * 收起 / 展开那条控制条（界面上那颗「悬浮球」）。
- *
- * **三档最小尺寸在同一扇窗口上轮着来**：浮窗 260x150 → 控制条 620x76 → 小球 152x40。
- * 每次 `setBounds` 之前必须先把下限放到**这一档要的尺寸**，否则新尺寸会被上一档静默夹住
- * （小球要 40 高被 76 夹、要 152 宽被 620 夹），而夹的动作不报错、只有 `getBounds()` 看得出来。
- */
-export function setBarCollapsed(next: boolean): FloatTilesStatus {
-  const win = hostWindow;
-  if (!win || win.isDestroyed() || !enabled) return status();
-  if (next === barCollapsed) return status();
-
-  barCollapsed = next;
-
-  if (next) {
-    hostExpandedBounds = win.getBounds();
-    win.setMinimumSize(BALL_WIDTH, BALL_HEIGHT);
-    win.setBounds(ballBounds());
-  } else {
-    const previous = hostExpandedBounds ?? expandedBarBounds();
-    win.setMinimumSize(previous.width, BAR_HEIGHT);
-    win.setBounds(previous);
-    hostExpandedBounds = null;
-  }
-
-  broadcast();
-  return status();
-}
-
-function restoreHost(): void {
-  const win = hostWindow;
-  if (!win || win.isDestroyed() || !hostRestoreBounds) return;
-  // 下限还回浮窗那一档：合并之后窗口又该能被拖成任意浮窗尺寸了
-  win.setMinimumSize(HOST_FLOAT_MIN_WIDTH, HOST_FLOAT_MIN_HEIGHT);
-  win.setBounds(hostRestoreBounds);
-  hostRestoreBounds = null;
-  // 收起态是拆分模式里的东西，退出拆分时一并清掉（下次进来是展开的控制条）
-  barCollapsed = false;
-  hostExpandedBounds = null;
-}
-
 export function setTilesEnabled(next: boolean): FloatTilesStatus {
   if (next === enabled) return status();
   enabled = next;
 
   if (enabled) {
-    collapseHost();
     syncTiles(wanted);
   } else {
     for (const tile of tiles.values()) {
       if (!tile.win.isDestroyed()) tile.win.destroy();
     }
     tiles.clear();
-    restoreHost();
     broadcast();
   }
 
@@ -609,13 +467,13 @@ export function setTilesEnabled(next: boolean): FloatTilesStatus {
 
 /** 退出浮窗时调用：拆分是浮窗的子模式，浮窗没了小窗不能留 */
 export function closeAllTiles(): void {
+  wanted = [];
   if (!enabled && tiles.size === 0) return;
   enabled = false;
   for (const tile of tiles.values()) {
     if (!tile.win.isDestroyed()) tile.win.destroy();
   }
   tiles.clear();
-  restoreHost();
   broadcast();
 }
 
@@ -664,16 +522,6 @@ function isHost(event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boo
 export function registerFloatTilesHandlers(): void {
   ipcMain.handle('float:get-tiles-status', () => status());
 
-  ipcMain.handle('float:set-tiles-enabled', (_event, value: unknown) =>
-    setTilesEnabled(value === true),
-  );
-
-  // 收起 / 展开那条控制条（小球形态）。同样只认主窗口 —— 小窗手里也有 ipcRenderer
-  ipcMain.handle('float:set-bar-collapsed', (event, value: unknown) => {
-    if (!isHost(event)) return status();
-    return setBarCollapsed(value === true);
-  });
-
   ipcMain.handle('float:sync-tiles', (event, list: unknown) => {
     // 只认主窗口 —— 小窗也握着 ipcRenderer，不能让它改主窗口的状态
     if (!isHost(event)) return status();
@@ -695,6 +543,7 @@ export function registerFloatTilesHandlers(): void {
         peerId: item.peerId,
         name: typeof item.name === 'string' ? item.name : item.peerId,
         muted: item.muted === true,
+        volume: typeof item.volume === 'number' && Number.isFinite(item.volume) ? Math.max(0, Math.min(1, item.volume)) : 1,
       }));
     return syncTiles(peers);
   });
@@ -754,8 +603,16 @@ export function registerFloatTilesHandlers(): void {
    */
   ipcMain.on('float:tile-toggle-mute', (event, peerId: unknown) => {
     const tile = [...tiles.values()].find((t) => t.win.webContents === event.sender);
-    if (!tile || typeof peerId !== 'string') return;
+    if (!tile || typeof peerId !== 'string' || peerId !== tile.peerId) return;
     notifyHost('float:tile-toggle-mute', peerId);
+  });
+
+  ipcMain.on('float:tile-set-volume', (event, payload: unknown) => {
+    const tile = [...tiles.values()].find((item) => item.win.webContents === event.sender);
+    if (!tile || !payload || typeof payload !== 'object') return;
+    const p = payload as { peerId?: unknown; volume?: unknown };
+    if (p.peerId !== tile.peerId || typeof p.volume !== 'number' || !Number.isFinite(p.volume)) return;
+    notifyHost('float:tile-set-volume', { peerId: tile.peerId, volume: Math.max(0, Math.min(1, p.volume)) });
   });
 
   /** 小窗上报自己的画面尺寸，帧泵按它缩放 —— 免得拖大之后画面糊/留黑边 */

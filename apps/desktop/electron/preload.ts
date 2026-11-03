@@ -301,19 +301,13 @@ const api = {
    * 才能零拷贝过去**，`ipcRenderer.send` 的结构化克隆搬不了 DOM 对象。
    */
   floatTiles: {
+    onVolumeRequest: (callback: (data: { peerId: string; volume: number }) => void): (() => void) => {
+      const handler = (_event: unknown, data: { peerId: string; volume: number }) => callback(data);
+      ipcRenderer.on('float:tile-set-volume', handler);
+      return () => ipcRenderer.off('float:tile-set-volume', handler);
+    },
     getStatus: (): Promise<FloatTilesStatus> =>
       ipcRenderer.invoke('float:get-tiles-status') as Promise<FloatTilesStatus>,
-    setEnabled: (enabled: boolean): Promise<FloatTilesStatus> =>
-      ipcRenderer.invoke('float:set-tiles-enabled', enabled) as Promise<FloatTilesStatus>,
-    /**
-     * 收起 / 展开那条控制条（缩成贴右下角的小球）。
-     *
-     * 窗口尺寸是主进程改的，所以渲染层这次调用之后要等 `float:tiles-status`
-     * 把 `barCollapsed` 推回来才切界面 —— 别自己先切成小球，那样窗口还没缩，
-     * 会出现「小球画在一条 620x76 的窗口里」的一帧。
-     */
-    setBarCollapsed: (collapsed: boolean): Promise<FloatTilesStatus> =>
-      ipcRenderer.invoke('float:set-bar-collapsed', collapsed) as Promise<FloatTilesStatus>,
     /**
      * 上报「对端有谁、各开一个窗」。顺序即位置：index 0 是第一个对端。
      *

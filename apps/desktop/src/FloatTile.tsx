@@ -52,6 +52,7 @@ export default function FloatTile() {
   const [peerId, setPeerId] = useState(params.get('peer') ?? '');
   const [name, setName] = useState(params.get('name') ?? t('tileFloat.defaultPeer'));
   const [muted, setMuted] = useState(params.get('muted') === '1');
+  const [volume, setVolume] = useState(1);
 
   const [hasFrame, setHasFrame] = useState(false);
   const [hovering, setHovering] = useState(false);
@@ -89,6 +90,8 @@ export default function FloatTile() {
       // 新名字与新 peerId 只能从新通道的 meta 上取（见 float-tiles.ts 的 connectTile）
       setPeerId(meta.peerId);
       setName(meta.name);
+      setVolume(meta.volume);
+      setMuted(meta.muted);
 
       port.onmessage = (event: MessageEvent): void => {
         if (!alive) return;
@@ -125,6 +128,8 @@ export default function FloatTile() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => window.gameShareTile?.onVolume(setVolume), []);
 
   /* ---------------- 静音状态跟着主窗口走 ---------------- */
 
@@ -214,6 +219,12 @@ export default function FloatTile() {
       </span>
 
       <div className={`tilewin__bar${hovering ? ' tilewin__bar--on' : ''}`}>
+        <label className="tilewin__volume" onPointerDown={(event) => event.stopPropagation()}>
+          <span>{t('tile.volume')}</span>
+          <input type="range" min={0} max={100} step={1} value={Math.round(volume * 100)} aria-label={t('tileFloat.volumeTitle')}
+            onChange={(event) => { const next = Number(event.target.value) / 100; setVolume(next); window.gameShareTile?.setVolume(peerId, next); }} />
+          <span>{Math.round(volume * 100)}%</span>
+        </label>
         <button
           type="button"
           className={`tilewin__mute${muted ? ' tilewin__mute--on' : ''}`}

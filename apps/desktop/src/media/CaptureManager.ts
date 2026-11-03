@@ -418,7 +418,7 @@ export class CaptureManager {
     this.#canvas = canvas;
     this.#timer = timer;
     this.#startTestTone(stream, options.toneHz ?? 440, options.toneGain ?? 0.002);
-    this.#adopt(stream, `合成源 ${label}（${width}x${height}@${fps}）`);
+    this.#adopt(stream, `测试源 ${label}（${width}x${height}@${fps}）`);
     return stream;
   }
 
