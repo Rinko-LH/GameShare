@@ -61,8 +61,12 @@
 .mode-card > span:not(.mode-card__action) { color: var(--text-dim); }
 .mode-card__number { font-family: var(--font-display); font-size: 22px; }
 .mode-card__action { color: var(--accent); margin-top: auto; }
-.connection-roles { display: flex; gap: 8px; margin: 12px 0; }
-.connection-roles .btn { flex: 1; }
+.connection-roles { display: flex; gap: 8px; margin: 12px 0; padding: 0; border: 0; min-width: 0; }
+.connection-roles legend { margin-bottom: 8px; color: var(--text-dim); font-size: 12px; }
+.connection-roles label { display: flex; align-items: center; gap: 6px; flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.connection-roles label:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); }
+.connection-roles input { accent-color: var(--accent); margin: 0; }
+.connection-roles:disabled label { opacity: 0.5; cursor: default; }
 .ip-connect textarea { resize: vertical; min-height: 72px; width: 100%; }
 .ip-connect details { margin: 12px 0; }
 .ip-connect summary { cursor: pointer; color: var(--text-dim); }

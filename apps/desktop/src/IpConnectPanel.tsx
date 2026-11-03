@@ -6,6 +6,10 @@ import { CONNECTION_MODES, type ConnectionMode } from './connection-modes';
 
 interface Props {
   mode: ConnectionMode;
+  role: 'host' | 'guest';
+  onRoleChange: (role: 'host' | 'guest') => void;
+  onConnectionError: (error: string | null) => void;
+  onCreatingRoom: (creating: boolean) => void;
   session: ShareSession;
   nickname: string;
   disabled: boolean;
@@ -23,7 +27,7 @@ interface Props {
 }
 
 export function IpConnectPanel(props: Props) {
-  const [role, setRole] = useState<'host' | 'guest'>('host');
+  const role = props.role;
   const [address, setAddress] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [invitation, setInvitation] = useState('');
@@ -38,11 +42,13 @@ export function IpConnectPanel(props: Props) {
 
   async function connect(create: boolean) {
     setError(null);
+    props.onConnectionError(null);
+    if (create) props.onCreatingRoom(true);
     props.onBusy(true);
     try {
       if (!create && invitation.trim()) { await props.onJoinInvitation(invitation); return; }
-      if (!create && !address.trim()) throw new Error(cloud ? '请粘贴房主发来的完整邀请。' : '请输入房主的 IP 地址或粘贴完整邀请。');
-      if (!create && !lanOnly && !roomCode.trim()) throw new Error('公网直连请填写房间码，或粘贴房主发来的完整邀请。');
+      if (!create && !address.trim()) throw new Error(cloud ? '请粘贴房主发来的邀请链接。' : '请输入房主的 IP 地址或粘贴邀请链接。');
+      if (!create && !lanOnly && !roomCode.trim()) throw new Error('公网直连请填写房间码，或粘贴房主发来的邀请链接。');
       const url = create ? DEFAULT_SIGNALING_URL : normalizeSignalingAddress(address);
       if (create) {
         const api = window.gameShare?.server;
@@ -64,19 +70,21 @@ export function IpConnectPanel(props: Props) {
       else await props.session.joinRoom(roomCode.trim().toUpperCase(), props.nickname, lanOnly && !roomCode.trim());
     } catch (err) {
       const message = ShareSession.describeError(err);
+      props.onConnectionError(message);
       setError(message); props.session.pushLog(message);
-    } finally { props.onBusy(false); }
+    } finally { if (create) props.onCreatingRoom(false); props.onBusy(false); }
   }
 
   return <section className="panel panel--tight ip-connect">
     <h2>{mode.name}</h2>
     {props.joined ? <p className="hint">已进入房间。可以选择屏幕共享，或等待朋友的画面。</p> : <p className="hint">{mode.steps}</p>}
-    {!props.joined && <div className="connection-roles" aria-label="你想做什么">
-      <button className={`btn ${role === 'host' ? 'btn--primary' : ''}`} type="button" disabled={locked} aria-pressed={role === 'host'} onClick={() => { setRole('host'); setError(null); }}>创建房间</button>
-      <button className={`btn ${role === 'guest' ? 'btn--primary' : ''}`} type="button" disabled={locked} aria-pressed={role === 'guest'} onClick={() => { setRole('guest'); setError(null); }}>加入朋友</button>
-    </div>}
+    {!props.joined && <fieldset className="connection-roles" disabled={locked}>
+      <legend>选择你的角色</legend>
+      <label><input type="radio" name="connection-role" value="host" checked={role === 'host'} onChange={() => { props.onRoleChange('host'); setError(null); }} />我是房主</label>
+      <label><input type="radio" name="connection-role" value="guest" checked={role === 'guest'} onChange={() => { props.onRoleChange('guest'); setError(null); }} />我要加入</label>
+    </fieldset>}
     {role === 'host' ? <>
-      {!props.disabled && <button className="btn btn--primary" type="button" disabled={locked} onClick={() => void connect(true)}>{props.busy ? '正在准备房间…' : '创建共享房间'}</button>}
+      {!props.disabled && <button className="btn btn--primary" type="button" disabled={locked} onClick={() => void connect(true)}>{props.busy ? '正在准备房间…' : '创建房间'}</button>}
       {!cloud && <>
         {addresses.length > 0 ? <label className="ip-connect__field">
           <span className="hint">发给朋友的地址{props.mode === 'uu' ? '（请选择 UU 显示的虚拟 IP）' : ''}</span>
@@ -97,8 +105,8 @@ export function IpConnectPanel(props: Props) {
         void window.gameShare?.tunnel.setEnabled(true).then(props.onTunnel).catch((err: unknown) => setError(ShareSession.describeError(err))).finally(() => props.onBusy(false));
       }}>重新准备异地地址</button>}
     </> : !props.joined && <form onSubmit={(e) => { e.preventDefault(); if (!locked) void connect(false); }}>
-      <label className="ip-connect__field"><span className="hint">粘贴房主发来的完整邀请</span>
-        <textarea className="field__input field__input--compact" value={invitation} onChange={(e) => setInvitation(e.target.value)} disabled={locked} rows={3} placeholder="一起玩 GameShare！GS1.…" />
+      <label className="ip-connect__field"><span className="hint">粘贴朋友发来的邀请链接</span>
+        <textarea className="field__input field__input--compact" value={invitation} onChange={(e) => setInvitation(e.target.value)} disabled={locked} rows={3} placeholder="GS1.…" />
       </label>
       {!cloud && <details><summary>没有邀请？手动输入 IP 地址</summary>
         <label className="ip-connect__field"><span className="hint">房主的{props.mode === 'uu' ? ' UU 虚拟' : props.mode === 'public' ? '公网' : '局域网'} IP</span>

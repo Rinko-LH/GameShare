@@ -20,7 +20,6 @@ import { ShareSession } from './session/ShareSession';
 import { IpConnectPanel } from './IpConnectPanel';
 import { ModeChooser } from './ModeChooser';
 import { CONNECTION_MODES, readConnectionMode, type ConnectionMode } from './connection-modes';
-import type { ConnectionState } from './signaling/SignalingClient';
 import { getLang, setLang, subscribeLang, t as lookup, fmt } from './i18n';
 import type { I18nKey } from './i18n';
 
@@ -31,13 +30,6 @@ const useI18n = (): typeof lookup => {
 };
 
 /* 状态文案存 i18n key，使用处经 t() 取当前语言 */
-const STATE_LABEL: Record<ConnectionState, I18nKey> = {
-  idle: 'state.conn.idle',
-  connecting: 'state.conn.connecting',
-  connected: 'state.conn.connected',
-  disconnected: 'state.conn.disconnected',
-};
-
 const LINK_LABEL: Record<string, I18nKey> = {
   new: 'state.link.new',
   connecting: 'state.link.connecting',
@@ -142,6 +134,9 @@ export default function App() {
   const [connectionMode, setConnectionMode] = useState<ConnectionMode | null>(readConnectionMode);
   const [modePickerOpen, setModePickerOpen] = useState(() => !readConnectionMode());
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [connectionRole, setConnectionRole] = useState<'host' | 'guest'>('host');
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [creatingRoom, setCreatingRoom] = useState(false);
 
   const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING_URL);
   const [selectedInviteAddress, setSelectedInviteAddress] = useState('');
@@ -413,6 +408,34 @@ export default function App() {
   const connected = connection.state === 'connected';
   const inRoom = room !== null;
 
+  // 房主看实际房间进度；后台服务启动不等于已经创建房间。
+  const headerStatus = connectionRole === 'host'
+    ? room
+      ? !connected
+        ? { tone: 'disconnected', label: t('status.host.disconnected'), detail: connection.detail }
+        : room.peers.length > 0
+          ? { tone: 'connected', label: t('status.host.joined'), detail: '' }
+          : { tone: 'connected', label: t('status.host.waiting'), detail: '' }
+      : creatingRoom
+        ? { tone: 'connecting', label: t('status.host.creating'), detail: '' }
+        : connectionError
+          ? { tone: 'disconnected', label: t('status.host.failed'), detail: connectionError }
+          : { tone: 'idle', label: t('status.host.idle'), detail: '' }
+    : connected
+      ? { tone: 'connected', label: t('status.guest.connected'), detail: '' }
+      : connection.state === 'connecting' || busy
+        ? { tone: 'connecting', label: t('status.guest.connecting'), detail: '' }
+        : connectionError || connection.state === 'disconnected'
+          ? { tone: 'disconnected', label: t('status.guest.failed'), detail: connectionError ?? connection.detail }
+          : { tone: 'idle', label: t('status.guest.idle'), detail: '' };
+
+  const changeConnectionRole = (role: 'host' | 'guest') => {
+    if (inRoom || busy || connection.state === 'connecting') return;
+    session.disconnect();
+    setConnectionError(null);
+    setConnectionRole(role);
+  };
+
   /** 隧道就绪时的公网地址 —— 异地唯一一条实测可用的路 */
   const tunnelUrl = tunnel?.state === 'running' ? tunnel.url : null;
 
@@ -510,6 +533,8 @@ export default function App() {
       setAdvancedOpen(false);
       setSideCollapsed(false);
       setConnectionMode(mode);
+      setConnectionRole('host');
+      setConnectionError(null);
       setModePickerOpen(false);
       try { localStorage.setItem('gs.connectionMode', mode); } catch { /* 本次选择仍然有效 */ }
     } catch (err) { session.pushLog(ShareSession.describeError(err)); }
@@ -630,12 +655,11 @@ export default function App() {
     // 地址与房间码都是 ASCII，btoa 安全；前缀 GS1. 便于在任意文本里定位。
     const code = `GS1.${btoa(JSON.stringify({ server: validInviteAddress, room: room.roomCode }))}`;
     const text = [
-      '一起玩 GameShare！把这行整体复制，粘贴到房间码框就能进：',
+      '一起玩 GameShare！复制下面的邀请链接，粘贴到“我要加入”的输入框，再点“连接并加入”：',
       code,
-      `（信令地址：${validInviteAddress} · 房间码：${room.roomCode}）`,
     ].join('\n');
     if (await writeClipboard(text)) {
-      session.pushLog('邀请信息已复制（对方粘贴到房间码框即可自动加入）');
+      session.pushLog('邀请链接已复制，发给朋友后，让对方粘贴到“我要加入”的输入框，再点“连接并加入”');
       flashCopied('invite');
     } else {
       session.pushLog('复制失败，请手动记录信令地址和房间码');
@@ -713,7 +737,7 @@ export default function App() {
 
   const joinModeInvitation = async (text: string) => {
     const invite = parseInvite(text);
-    if (!invite?.server || !invite.room) throw new Error('未识别到完整邀请，请让房主点击“复制邀请”，再把整段文字粘贴过来。');
+    if (!invite?.server || !invite.room) throw new Error('未识别到邀请链接，请粘贴完整的 GS1. 开头的链接。');
     setServerUrl(invite.server);
     setJoinError(null);
     await session.connectAndWait(invite.server, connectionMode === 'uu' || connectionMode === 'lan');
@@ -1574,10 +1598,10 @@ export default function App() {
             </label>
           )}
 
-          <div className={`status status--${connection.state}`}>
+          <div className={`status status--${headerStatus.tone}`} title={headerStatus.detail || (connectionRole === 'host' ? t('status.host.title') : t('status.guest.title'))}>
             <span className="status__dot" />
-            <span>房间服务 · {t(STATE_LABEL[connection.state])}</span>
-            {connection.rttMs !== null && <span className="status__rtt">{connection.rttMs} ms</span>}
+            <span>{connectionRole === 'host' ? headerStatus.label : `${t('status.guest.prefix')} · ${headerStatus.label}`}</span>
+            {connectionRole === 'guest' && connected && connection.rttMs !== null && <span className="status__rtt">{connection.rttMs} ms</span>}
           </div>
 
           {/* 窗口按钮。主窗口是 `frame: false` 的（见 electron/main.ts 里 frame 那段：
@@ -1631,7 +1655,7 @@ export default function App() {
           {!inRoom && <label className="panel panel--tight ip-connect__field"><span className="hint">你的昵称（可不填）</span>
             <input className="field__input field__input--compact" value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={16} disabled={busy} placeholder="朋友会看到的名字" />
           </label>}
-          {connectionMode && <IpConnectPanel key={connectionMode} mode={connectionMode} session={session} nickname={nickname} disabled={inRoom || connection.state === 'connecting'}
+          {connectionMode && <IpConnectPanel key={connectionMode} mode={connectionMode} role={connectionRole} onRoleChange={changeConnectionRole} onConnectionError={setConnectionError} onCreatingRoom={setCreatingRoom} session={session} nickname={nickname} disabled={inRoom || connection.state === 'connecting'}
             joined={inRoom} busy={busy} server={embeddedServer} tunnel={tunnel} inviteAddress={inviteAddress}
             onInviteAddress={setSelectedInviteAddress} onServerUrl={setServerUrl} onBusy={setBusy} onServer={setEmbeddedServer} onTunnel={setTunnel} onJoinInvitation={joinModeInvitation} />}
           <button className="btn btn--tiny" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>{advancedOpen ? '收起高级设置' : '高级设置（网络与中继）'}</button>
@@ -1987,7 +2011,14 @@ export default function App() {
                   <button
                     type="button"
                     className="btn btn--primary"
-                    onClick={() => void run(() => session.createRoom(nickname))}
+                    onClick={() => void run(async () => {
+                      setConnectionRole('host');
+                      setConnectionError(null);
+                      setCreatingRoom(true);
+                      try { await session.createRoom(nickname); }
+                      catch (err) { setConnectionError(ShareSession.describeError(err)); throw err; }
+                      finally { setCreatingRoom(false); }
+                    })}
                     disabled={!connected || busy}
                   >
                     {t('room.create')}

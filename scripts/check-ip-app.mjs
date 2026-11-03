@@ -48,6 +48,7 @@ async function until(check, message) {
 }
 let ws;
 let host;
+let visitor;
 try {
   const target = await until(async () => {
     const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -102,7 +103,7 @@ try {
   assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /端口映射/);
   await openModes(); await selectMode(3);
   assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /不转发画面和声音/);
-  await evaluate('Array.from(document.querySelectorAll(".connection-roles button")).find(b => b.innerText === "加入朋友").click()');
+  await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
   assert.equal(await evaluate('document.querySelectorAll(".ip-connect form input").length'), 0, 'Cloudflare should offer invitation joining, not LAN IP fields');
   await openModes(); await selectMode(0);
   fs.writeFileSync(path.join(output, 'mode-uu.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
@@ -113,48 +114,70 @@ try {
   const status = await evaluate('window.gameShare.server.getStatus()');
   const lanAddress = new URL(status.lanUrls[0]).hostname;
   console.log('PASS: packaged renderer, preload and real screen enumeration');
+  const initialRooms = (await health()).rooms;
+  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /尚未创建房间/);
   await evaluate('document.querySelector(".ip-connect > button").click()');
   await until(() => evaluate('document.querySelector(".roomcode__value")?.innerText'), 'Create IP room button did not enter a room');
-  assert.equal((await health()).rooms, 1);
+  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间已创建 · 等待朋友/);
+  assert.equal(await evaluate('Boolean(document.querySelector(".app__header .status__rtt"))'), false, 'Host must not show a localhost RTT');
+  assert.equal((await health()).rooms, initialRooms + 1);
+  const ownRoom = await evaluate('document.querySelector(".roomcode__value").innerText');
+  visitor = io('http://[::1]:8080', { reconnection: false });
+  await new Promise((resolve, reject) => { visitor.once('connect', resolve); visitor.once('connect_error', reject); });
+  const visit = await new Promise((resolve, reject) => visitor.timeout(3000).emit('join-room', { roomCode: ownRoom, nickname: 'Status test friend' }, (err, result) => err ? reject(err) : resolve(result)));
+  assert.equal(visit.ok, true);
+  await until(() => evaluate('document.querySelector(".app__header .status")?.innerText === "朋友已加入"'), 'Host should show that a friend joined');
+  visitor.disconnect();
+  await until(() => evaluate('document.querySelector(".app__header .status")?.innerText.includes("房间已创建 · 等待朋友")'), 'Host should wait again after the friend leaves');
   await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.innerText.trim())).click()');
-  await until(async () => (await health()).rooms === 0, 'Room was not closed');
+  await until(async () => (await health()).rooms === initialRooms, 'Test room was not closed');
+  await until(() => evaluate('document.querySelector(".app__header .status")?.innerText === "尚未创建房间"'), 'Leaving a room should reset the host status');
   await openModes(); await selectMode(1);
   host = io('http://[::1]:8080', { reconnection: false });
   await new Promise((resolve, reject) => { host.once('connect', resolve); host.once('connect_error', reject); });
   const created = await new Promise((resolve, reject) => host.timeout(3000).emit('create-room', { nickname: 'UI test host', allowIpJoin: true }, (err, result) => err ? reject(err) : resolve(result)));
   assert.equal(created.ok, true);
-  await evaluate('Array.from(document.querySelectorAll(".connection-roles button")).find(b => b.innerText === "加入朋友").click()');
+  await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
   await until(() => evaluate('Boolean(document.querySelector(".ip-connect details"))'), 'Manual IP form missing');
+  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间连接 · 未连接/);
   await evaluate('document.querySelector(".ip-connect details").open = true');
   await evaluate(`(() => {
     const input = document.querySelector('.ip-connect form input');
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(lanAddress)});
     input.dispatchEvent(new Event('input', {bubbles:true}));
   })()`);
+  if (initialRooms > 0) {
+    await evaluate(`(() => { const input = document.querySelectorAll('.ip-connect form input')[1]; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(created.data.roomCode)}); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
+  }
   await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'IP connect button stayed disabled');
   await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
   await until(async () => (await evaluate('document.querySelector(".roomcode__value")?.innerText')) === created.data.roomCode, 'IP button did not join the host room');
-  console.log('PASS: actual UI creates an IP room, leaves it, and joins by bare IP without a room code');
+  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间连接 · 已连接/);
+  console.log(initialRooms > 0 ? 'PASS: actual UI creates/leaves a test room and joins by IP with an explicit code alongside existing rooms' : 'PASS: actual UI creates an IP room, leaves it, and joins by bare IP without a room code');
   assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).find(b => b.innerText.includes("· 切换")).disabled'), true, 'Mode switching must be blocked while in a room');
   await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.innerText.trim())).click()');
   await until(() => evaluate('!document.querySelector(".roomcode__value")'), 'Did not leave before invitation test');
   await openModes(); await selectMode(2);
-  await evaluate('Array.from(document.querySelectorAll(".connection-roles button")).find(b => b.innerText === "加入朋友").click()');
+  await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
   const invitation = `GS1.${Buffer.from(JSON.stringify({ server: 'http://[::1]:8080', room: created.data.roomCode })).toString('base64')}`;
   await evaluate(`(() => { const input = document.querySelector('.ip-connect textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, 'invalid invitation'); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
   await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'Malformed invitation input not ready');
   await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
-  await until(() => evaluate('document.querySelector(".ip-connect [role=alert]")?.innerText.includes("未识别到完整邀请")'), 'Malformed invitation error should be visible');
+  await until(() => evaluate('document.querySelector(".ip-connect [role=alert]")?.innerText.includes("未识别到邀请链接")'), 'Malformed invitation error should be visible');
+  await until(() => evaluate('document.querySelector(".app__header .status")?.innerText.includes("房间连接 · 连接失败")'), 'Failed join should show a failed guest connection');
   await evaluate(`(() => { const input = document.querySelector('.ip-connect textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(invitation)}); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
   await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'Invitation join stayed disabled');
   await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
   await until(async () => (await evaluate('document.querySelector(".roomcode__value")?.innerText')) === created.data.roomCode, 'Invitation did not join the host room');
   console.log('PASS: public-mode invitation joins a real room, switching is locked during a room');
+  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间连接 · 已连接/);
+  console.log('PASS: host room lifecycle (idle, created, friend joined, waiting, left) without local RTT; guest failure/retry/connected status');
   assert.equal(await evaluate('Boolean(document.querySelector(".ip-connect form"))'), false, 'Joined room should hide the connection form');
   const screenshot = await command('Page.captureScreenshot');
   fs.writeFileSync(path.join(output, 'packaged-ip-panel.png'), Buffer.from(screenshot.data, 'base64'));
   await evaluate('setTimeout(() => window.gameShare.windowControl.close(), 100); true');
 } finally {
+  visitor?.disconnect();
   host?.disconnect();
   ws?.close();
   if (child.exitCode === null) child.kill();
