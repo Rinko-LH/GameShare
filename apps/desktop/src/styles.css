@@ -50,6 +50,25 @@
   color-scheme: dark;
 }
 
+.mode-chooser { flex: 1; min-height: 0; overflow: auto; padding: clamp(20px, 5vw, 64px); }
+.mode-chooser__content { max-width: 900px; margin: auto; }
+.mode-chooser__eyebrow { color: var(--accent); letter-spacing: 2px; }
+.mode-chooser h2 { font-size: clamp(24px, 3vw, 36px); margin: 12px 0; }
+.mode-chooser__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 28px 0; }
+.mode-card { display: flex; flex-direction: column; gap: 12px; text-align: left; padding: 24px; border: 1px solid var(--border-strong); border-radius: 14px; color: var(--text); background: var(--bg-panel); font: inherit; cursor: pointer; }
+.mode-card:hover, .mode-card:focus-visible { border-color: var(--accent); background: var(--accent-dim); }
+.mode-card strong { font-size: 20px; }
+.mode-card > span:not(.mode-card__action) { color: var(--text-dim); }
+.mode-card__number { font-family: var(--font-display); font-size: 22px; }
+.mode-card__action { color: var(--accent); margin-top: auto; }
+.connection-roles { display: flex; gap: 8px; margin: 12px 0; }
+.connection-roles .btn { flex: 1; }
+.ip-connect textarea { resize: vertical; min-height: 72px; width: 100%; }
+.ip-connect details { margin: 12px 0; }
+.ip-connect summary { cursor: pointer; color: var(--text-dim); }
+.ip-connect > .btn { margin-top: 8px; }
+@media (max-width: 650px) { .mode-chooser__grid { grid-template-columns: 1fr; } .mode-card { padding: 18px; } }
+
 * {
   box-sizing: border-box;
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { PeerInfo, QualityLevel } from '@game-share/protocol';
-import { DEFAULT_SIGNALING_URL, remoteAudioAudience } from '@game-share/shared';
+import { DEFAULT_SIGNALING_URL, normalizeSignalingAddress, remoteAudioAudience } from '@game-share/shared';
 
 import type { TurnUiStatus } from './types/global';
 
@@ -18,6 +18,8 @@ import type { LinkDiagnosis } from './rtc/PeerLink';
 import { floatBallProps, floatDragProps, floatGripProps } from './float-drag';
 import { ShareSession } from './session/ShareSession';
 import { IpConnectPanel } from './IpConnectPanel';
+import { ModeChooser } from './ModeChooser';
+import { CONNECTION_MODES, readConnectionMode, type ConnectionMode } from './connection-modes';
 import type { ConnectionState } from './signaling/SignalingClient';
 import { getLang, setLang, subscribeLang, t as lookup, fmt } from './i18n';
 import type { I18nKey } from './i18n';
@@ -136,6 +138,10 @@ export default function App() {
   const [session] = useState(() => new ShareSession());
   const state = useSyncExternalStore(session.subscribe, session.getState);
   const t = useI18n();
+
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode | null>(readConnectionMode);
+  const [modePickerOpen, setModePickerOpen] = useState(() => !readConnectionMode());
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING_URL);
   const [selectedInviteAddress, setSelectedInviteAddress] = useState('');
@@ -422,8 +428,14 @@ export default function App() {
     : [];
 
   /** 邀请信息里给对方填的信令地址：隧道优先，其次同一局域网 */
-  const inviteAddress =
-    selectedInviteAddress || (tunnelUrl ?? embeddedServer?.lanUrls[0] ?? embeddedServer?.localUrl ?? null);
+  const inviteAddress = inRoom && serverUrl !== DEFAULT_SIGNALING_URL ? serverUrl
+    : connectionMode === 'cloudflare' ? tunnelUrl
+    : selectedInviteAddress || (connectionMode === 'public' ? publicServerUrls[0] ?? null
+      : embeddedServer?.lanUrls[0] ?? null);
+  const validInviteAddress = (() => {
+    if (!inviteAddress) return null;
+    try { return normalizeSignalingAddress(inviteAddress); } catch { return null; }
+  })();
 
   /* ---------------- 内置信令服务器 ---------------- */
 
@@ -484,6 +496,25 @@ export default function App() {
       setTunnelBusy(false);
     }
   }, []);
+
+  const selectConnectionMode = async (mode: ConnectionMode) => {
+    if (inRoom || busy || connection.state === 'connecting') return;
+    setBusy(true);
+    try {
+      if (mode !== 'cloudflare' && tunnel?.enabled) await handleToggleTunnel(false);
+      session.disconnect();
+      setSelectedInviteAddress('');
+      setServerUrl(DEFAULT_SIGNALING_URL);
+      setJoinCode('');
+      setJoinError(null);
+      setAdvancedOpen(false);
+      setSideCollapsed(false);
+      setConnectionMode(mode);
+      setModePickerOpen(false);
+      try { localStorage.setItem('gs.connectionMode', mode); } catch { /* 本次选择仍然有效 */ }
+    } catch (err) { session.pushLog(ShareSession.describeError(err)); }
+    finally { setBusy(false); }
+  };
 
   /* ---------------- 浮窗模式 ---------------- */
 
@@ -593,15 +624,15 @@ export default function App() {
   }, []);
 
   const copyInvite = useCallback(async (): Promise<void> => {
-    if (!room || !inviteAddress) return;
+    if (!room || !validInviteAddress) return;
     // 邀请码：GS1.<base64({server, room})>，机器可读的一整行 —— 对方粘贴进
     // 房间码框就能自动填地址 + 自动连接 + 自动加入，不用再对着两个字段手抄。
     // 地址与房间码都是 ASCII，btoa 安全；前缀 GS1. 便于在任意文本里定位。
-    const code = `GS1.${btoa(JSON.stringify({ server: inviteAddress, room: room.roomCode }))}`;
+    const code = `GS1.${btoa(JSON.stringify({ server: validInviteAddress, room: room.roomCode }))}`;
     const text = [
       '一起玩 GameShare！把这行整体复制，粘贴到房间码框就能进：',
       code,
-      `（信令地址：${inviteAddress} · 房间码：${room.roomCode}）`,
+      `（信令地址：${validInviteAddress} · 房间码：${room.roomCode}）`,
     ].join('\n');
     if (await writeClipboard(text)) {
       session.pushLog('邀请信息已复制（对方粘贴到房间码框即可自动加入）');
@@ -609,7 +640,7 @@ export default function App() {
     } else {
       session.pushLog('复制失败，请手动记录信令地址和房间码');
     }
-  }, [room, inviteAddress, session, writeClipboard, flashCopied]);
+  }, [room, validInviteAddress, session, writeClipboard, flashCopied]);
 
   /**
    * 解析邀请文本。认三种（按优先级）：
@@ -679,6 +710,15 @@ export default function App() {
     },
     [parseInvite, serverUrl, connected, connection.state, session],
   );
+
+  const joinModeInvitation = async (text: string) => {
+    const invite = parseInvite(text);
+    if (!invite?.server || !invite.room) throw new Error('未识别到完整邀请，请让房主点击“复制邀请”，再把整段文字粘贴过来。');
+    setServerUrl(invite.server);
+    setJoinError(null);
+    await session.connectAndWait(invite.server, connectionMode === 'uu' || connectionMode === 'lan');
+    await session.joinRoom(invite.room, nickname);
+  };
 
   /* ---------------- 链路统计轮询 ---------------- */
 
@@ -1492,6 +1532,9 @@ export default function App() {
         </div>
 
         <div className="app__header-right">
+          <button className="btn btn--tiny" type="button" disabled={inRoom || busy || connection.state === 'connecting'} onClick={() => setModePickerOpen(true)} title={inRoom ? '请先离开房间再切换模式' : '选择连接方式'}>
+            {CONNECTION_MODES.find((mode) => mode.id === connectionMode)?.name ?? '选择连接方式'} · 切换
+          </button>
           {/* 中英切换：只切界面文案，房间/共享等功能不受影响 */}
           <button
             type="button"
@@ -1533,7 +1576,7 @@ export default function App() {
 
           <div className={`status status--${connection.state}`}>
             <span className="status__dot" />
-            <span>{t(STATE_LABEL[connection.state])}</span>
+            <span>房间服务 · {t(STATE_LABEL[connection.state])}</span>
             {connection.rttMs !== null && <span className="status__rtt">{connection.rttMs} ms</span>}
           </div>
 
@@ -1570,7 +1613,7 @@ export default function App() {
         </div>
       </header>
 
-      <main
+      {modePickerOpen ? <ModeChooser onSelect={(mode) => void selectConnectionMode(mode)} onCancel={connectionMode ? () => setModePickerOpen(false) : undefined} /> : <main
         className="app__body"
         style={
           // 常规模式：三列（侧栏宽可拖拽调、收起时切两列）。
@@ -1585,9 +1628,14 @@ export default function App() {
       >
         {!sideCollapsed && (
         <div className="app__side">
-          <IpConnectPanel session={session} nickname={nickname} disabled={inRoom || connection.state === 'connecting'}
-            busy={busy} server={embeddedServer} inviteAddress={inviteAddress}
-            onInviteAddress={setSelectedInviteAddress} onServerUrl={setServerUrl} onBusy={setBusy} onServer={setEmbeddedServer} />
+          {!inRoom && <label className="panel panel--tight ip-connect__field"><span className="hint">你的昵称（可不填）</span>
+            <input className="field__input field__input--compact" value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={16} disabled={busy} placeholder="朋友会看到的名字" />
+          </label>}
+          {connectionMode && <IpConnectPanel key={connectionMode} mode={connectionMode} session={session} nickname={nickname} disabled={inRoom || connection.state === 'connecting'}
+            joined={inRoom} busy={busy} server={embeddedServer} tunnel={tunnel} inviteAddress={inviteAddress}
+            onInviteAddress={setSelectedInviteAddress} onServerUrl={setServerUrl} onBusy={setBusy} onServer={setEmbeddedServer} onTunnel={setTunnel} onJoinInvitation={joinModeInvitation} />}
+          <button className="btn btn--tiny" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>{advancedOpen ? '收起高级设置' : '高级设置（网络与中继）'}</button>
+          {advancedOpen && <>
           {/* ---- 连接：地址和昵称各一行输入框，其余信息全部让位 ---- */}
           <section className="panel panel--tight">
             <div className="row">
@@ -1928,8 +1976,9 @@ export default function App() {
             </section>
           )}
 
+          </>}
           {/* ---- 房间 ---- */}
-          <section className="panel panel--tight">
+          {(inRoom || advancedOpen) && <section className="panel panel--tight">
             <h2>{t('room.title')}</h2>
 
             {!inRoom ? (
@@ -1988,7 +2037,7 @@ export default function App() {
                       copied === 'invite' ? 'btn btn--tiny btn--done' : 'btn btn--tiny btn--primary'
                     }
                     onClick={() => void copyInvite()}
-                    disabled={!inviteAddress}
+                    disabled={!validInviteAddress}
                     title={t('room.copyInviteTitle')}
                   >
                     {copied === 'invite' ? t('room.copied') : t('room.copyInvite')}
@@ -2029,7 +2078,7 @@ export default function App() {
                 </button>
               </>
             )}
-          </section>
+          </section>}
 
           {/* ---- 语音 ---- */}
           <section className="panel panel--tight">
@@ -2394,14 +2443,9 @@ export default function App() {
           )}
           {!inRoom ? (
             <div className="stage__empty">
-              <p>{t('float.enterRoomHint')}</p>
-              {/* 联调提示只给开发模式（vite dev server）——安装包用户看到
-                  `npm run dev:desktop` 只会困惑，这不是他们该执行的命令 */}
-              {import.meta.env.DEV && (
-                <p className="hint hint--dim">
-                  本机联调：再开一个客户端（<code>npm run dev:desktop</code>）用同一房间码加入。
-                </p>
-              )}
+              <h2>和朋友一起看，一起玩</h2>
+              <p>① 选择连接方式 → ② 创建或加入房间 → ③ 选择屏幕开始共享</p>
+              <p className="hint hint--dim">从左侧开始。加入房间后，朋友共享的画面会显示在这里。</p>
             </div>
           ) : isFloat && splitActive ? (
             /* 拆分模式：主窗口已经被主进程收成一条贴底的窄控制条（620x76）。
@@ -2550,7 +2594,7 @@ export default function App() {
             </div>
           )}
         </div>
-      </main>
+      </main>}
     </div>
   );
 }

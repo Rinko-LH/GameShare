@@ -419,10 +419,10 @@ export class ShareSession {
     this.#patch({ room: null, links: {}, remoteStreams: {}, remoteTracks: {}, remoteSharing: {} });
   }
 
-  async connectAndWait(url: string): Promise<void> {
+  async connectAndWait(url: string, lanOnly = true): Promise<void> {
     const target = normalizeSignalingAddress(url);
     if (this.signaling.connected && this.#serverUrl === target) {
-      this.#lanOnly = true;
+      this.#lanOnly = lanOnly;
       return;
     }
     if (this.#state.room) throw new Error('请先离开当前房间再连接其他电脑');
@@ -431,7 +431,9 @@ export class ShareSession {
       const timer = setTimeout(() => {
         unsubscribe();
         this.disconnect();
-        reject(new Error(`连接 ${target} 超时：请确认双方在同一个 UU 云联机房间、对方已创建 IP 共享房间，并允许 GameShare 通过防火墙`));
+        reject(new Error(lanOnly
+          ? `连接 ${target} 超时：请确认双方在同一个 UU 房间或局域网、房主已创建房间，并允许 GameShare 通过防火墙`
+          : `连接 ${target} 超时：请确认房主已创建房间、邀请地址仍有效；公网直连还需检查端口映射和防火墙`));
       }, 12_000);
       const unsubscribe = this.signaling.on('state', (state) => {
         if (state !== 'connected') return;
@@ -439,7 +441,7 @@ export class ShareSession {
         unsubscribe();
         resolve();
       });
-      this.connect(target, true);
+      this.connect(target, lanOnly);
     });
   }
 
