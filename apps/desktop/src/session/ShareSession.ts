@@ -5,7 +5,7 @@ import {
   type TrackRole,
   type TurnRelayPayload,
 } from '@game-share/protocol';
-import { DEFAULT_SIGNALING_URL, buildIceServers, mergeWithTransportError, type IceServerConfig, type ServerReachability } from '@game-share/shared';
+import { DEFAULT_SIGNALING_URL, normalizeSignalingAddress, buildIceServers, mergeWithTransportError, type IceServerConfig, type ServerReachability } from '@game-share/shared';
 
 import { CaptureError, CaptureManager } from '../media/CaptureManager';
 import { MicCapture, type MicSettings } from '../media/MicCapture';
@@ -205,6 +205,7 @@ export class ShareSession {
   #listeners = new Set<() => void>();
   #unsubscribe: Array<() => void> = [];
   #serverUrl = DEFAULT_SIGNALING_URL;
+  #lanOnly = false;
   /** 上一条连接状态日志，用于抑制重连风暴刷屏（见 #bindSignaling） */
   #lastConnLog = '';
   /** 诊断轮询定时器。见 #startDiagnosisPolling */
@@ -402,8 +403,9 @@ export class ShareSession {
     }
   }
 
-  connect(url?: string): void {
-    this.#serverUrl = url?.trim() || DEFAULT_SIGNALING_URL;
+  connect(url?: string, lanOnly = false): void {
+    this.#serverUrl = normalizeSignalingAddress(url ?? '');
+    this.#lanOnly = lanOnly;
     this.signaling.connect(this.#serverUrl);
   }
 
@@ -417,8 +419,32 @@ export class ShareSession {
     this.#patch({ room: null, links: {}, remoteStreams: {}, remoteTracks: {}, remoteSharing: {} });
   }
 
-  async createRoom(nickname: string): Promise<{ roomCode: string; self: PeerInfo; peers: PeerInfo[] }> {
-    const data = await this.signaling.createRoom(nickname);
+  async connectAndWait(url: string): Promise<void> {
+    const target = normalizeSignalingAddress(url);
+    if (this.signaling.connected && this.#serverUrl === target) {
+      this.#lanOnly = true;
+      return;
+    }
+    if (this.#state.room) throw new Error('请先离开当前房间再连接其他电脑');
+    this.disconnect();
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        unsubscribe();
+        this.disconnect();
+        reject(new Error(`连接 ${target} 超时：请确认双方在同一个 UU 云联机房间、对方已创建 IP 共享房间，并允许 GameShare 通过防火墙`));
+      }, 12_000);
+      const unsubscribe = this.signaling.on('state', (state) => {
+        if (state !== 'connected') return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      });
+      this.connect(target, true);
+    });
+  }
+
+  async createRoom(nickname: string, allowIpJoin = false): Promise<{ roomCode: string; self: PeerInfo; peers: PeerInfo[] }> {
+    const data = await this.signaling.createRoom(nickname, allowIpJoin);
     this.#enterRoom(data.roomCode, data.self, data.peers, data.turn);
     this.pushLog(`房间已创建：${data.roomCode}`);
     this.#logTurnRelay(data.turn);
@@ -428,8 +454,9 @@ export class ShareSession {
   async joinRoom(
     roomCode: string,
     nickname: string,
+    joinByIp = false,
   ): Promise<{ roomCode: string; self: PeerInfo; peers: PeerInfo[] }> {
-    const data = await this.signaling.joinRoom(roomCode, nickname);
+    const data = await this.signaling.joinRoom(roomCode, nickname, joinByIp);
     this.#enterRoom(data.roomCode, data.self, data.peers, data.turn);
     this.pushLog(`已加入房间：${data.roomCode}，当前 ${data.peers.length + 1} 人`);
     this.#logTurnRelay(data.turn);
@@ -504,7 +531,8 @@ export class ShareSession {
     if (!this.#mesh) {
       this.#mesh = new MeshManager({
         signaling: this.signaling,
-        iceServers: buildIceServers({ turn: turn ? shareTurn(turn) : undefined }),
+        // UU/LAN uses reachable local and virtual adapter candidates, avoiding public STUN/TURN routes.
+        iceServers: this.#lanOnly ? [] : buildIceServers({ turn: turn ? shareTurn(turn) : undefined }),
         selfPeerId: room.self.peerId,
         getSourceHeight: () => this.capture.sourceHeight,
         getSourceWidth: () => this.capture.sourceWidth,

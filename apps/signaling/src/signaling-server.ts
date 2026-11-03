@@ -261,7 +261,7 @@ export function createSignalingServer(options: SignalingServerOptions): Signalin
     log.info(`连接建立 peer=${socket.id} addr=${socket.handshake.address}`);
 
     socket.on(ClientEvent.CreateRoom, (payload: CreateRoomPayload, ack?: SocketAck<RoomCreatedPayload>) => {
-      const result = rooms.createRoom(socket.id, payload?.nickname);
+      const result = rooms.createRoom(socket.id, payload?.nickname, payload?.allowIpJoin === true);
       if (!result.ok) {
         ack?.(failure(result.error.code, result.error.message));
         return;
@@ -283,7 +283,9 @@ export function createSignalingServer(options: SignalingServerOptions): Signalin
     });
 
     socket.on(ClientEvent.JoinRoom, (payload: JoinRoomPayload, ack?: SocketAck<RoomJoinedPayload>) => {
-      const result = rooms.joinRoom(payload?.roomCode, socket.id, payload?.nickname);
+      const result = payload?.joinByIp === true
+        ? rooms.joinByIp(socket.id, payload?.nickname)
+        : rooms.joinRoom(payload?.roomCode, socket.id, payload?.nickname);
       if (!result.ok) {
         ack?.(failure(result.error.code, result.error.message));
         return;

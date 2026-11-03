@@ -274,13 +274,13 @@ export class SignalingClient {
 
   /* ---------------- 房间操作 ---------------- */
 
-  createRoom(nickname: string): Promise<RoomCreatedPayload> {
-    const payload: CreateRoomPayload = { nickname };
+  createRoom(nickname: string, allowIpJoin = false): Promise<RoomCreatedPayload> {
+    const payload: CreateRoomPayload = { nickname, allowIpJoin };
     return this.#request<RoomCreatedPayload>(ClientEvent.CreateRoom, payload);
   }
 
-  joinRoom(roomCode: string, nickname: string): Promise<RoomJoinedPayload> {
-    const payload: JoinRoomPayload = { roomCode, nickname };
+  joinRoom(roomCode: string, nickname: string, joinByIp = false): Promise<RoomJoinedPayload> {
+    const payload: JoinRoomPayload = { roomCode, nickname, joinByIp };
     return this.#request<RoomJoinedPayload>(ClientEvent.JoinRoom, payload);
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "game-share",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "private": true,
   "description": "轻量级 Windows 多人游戏画面共享工具（WebRTC P2P Mesh）",
   "workspaces": [
@@ -18,12 +18,15 @@
     "build": "npm run build -w @game-share/signaling && npm run build -w @game-share/desktop",
     "bundle:signaling": "npm run bundle -w @game-share/signaling",
     "build:exe": "node scripts/build-exe.mjs",
+    "build:folder": "node scripts/build-folder.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
     "smoke": "node scripts/smoke-signaling.mjs",
     "smoke:p2p": "node scripts/smoke-p2p.mjs",
     "smoke:all": "npm run smoke && npm run smoke:p2p",
     "check:embedded": "node scripts/check-embedded-server.mjs",
+    "check:ip": "node scripts/check-ip-connect.mjs",
+    "check:ip-app": "node scripts/check-ip-app.mjs",
     "check:app-audio": "node scripts/run-electron.cjs scripts/check-app-audio.cjs",
     "check:media-tracks": "node scripts/check-media-tracks.mjs",
     "check:topmost": "node scripts/run-electron.cjs scripts/check-topmost.cjs",

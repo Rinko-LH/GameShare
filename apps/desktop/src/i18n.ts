@@ -12,6 +12,18 @@
 export type Lang = 'zh' | 'en';
 
 const ZH = {
+  'ip.title': 'UU / 局域网连接',
+  'ip.refresh': '刷新本机地址',
+  'ip.hint': '双方先进入同一个 UU 云联机房间。共享端创建 IP 房间后选择屏幕；观看端输入共享端的虚拟 IP。',
+  'ip.create': '创建 IP 共享房间',
+  'ip.inviteAddress': '邀请使用的本机地址（请选择 UU IP）',
+  'ip.remoteAddress': '对方的 UU / 局域网 IP',
+  'ip.roomCode': '房间码（可选）',
+  'ip.roomOptional': '仅一个 IP 房间时可留空',
+  'ip.connect': '连接并加入',
+  'ip.connecting': '正在连接…',
+  'ip.needAddress': '请输入共享端的 UU / 局域网 IP',
+  'ip.serverFailed': '本机服务启动失败，请检查 8080 端口',
   /* app / 顶栏 */
   'app.tagline': '为游戏而生，不止于游戏',
   'lang.toggle': 'EN',
@@ -287,6 +299,18 @@ export type I18nKey = keyof typeof ZH;
 type Dict = Record<I18nKey, string>;
 
 const EN: Dict = {
+  'ip.title': 'UU / LAN connection',
+  'ip.refresh': 'Refresh local addresses',
+  'ip.hint': 'Join the same UU virtual LAN first. The host creates an IP room and selects a screen; viewers enter the host’s virtual IP.',
+  'ip.create': 'Create IP sharing room',
+  'ip.inviteAddress': 'Local invite address (select your UU IP)',
+  'ip.remoteAddress': 'Host UU / LAN IP',
+  'ip.roomCode': 'Room code (optional)',
+  'ip.roomOptional': 'Leave empty for a single IP room',
+  'ip.connect': 'Connect and join',
+  'ip.connecting': 'Connecting…',
+  'ip.needAddress': 'Enter the host UU / LAN IP',
+  'ip.serverFailed': 'Local server failed to start; check port 8080',
   'app.tagline': 'Built for games, and beyond',
   'lang.toggle': '中文',
   'lang.toggleTitle': '切换界面语言 / Switch UI language',

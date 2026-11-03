@@ -104,7 +104,7 @@ export class EmbeddedSignalingServer {
   }
 
   get status(): EmbeddedServerStatus {
-    return this.#status;
+    return this.#compose(this.#status.state, this.#status.port, this.#status.detail);
   }
 
   /** 状态变化回调，主进程用它推给渲染进程 */

@@ -1,3 +1,7 @@
+.ip-connect__field { display: grid; gap: 4px; margin: 8px 0; }
+.ip-connect__field .field__input { width: 100%; min-width: 0; box-sizing: border-box; }
+.ip-connect select { color: inherit; background: var(--bg, #141922); }
+
 /* ---------------- 字体 ----------------
  * Rajdhani（OFL 开源协议）：电竞 HUD 感的显示字体，只用于标题、数字与状态词；
  * 中文正文走系统栈（中文 webfont 动辄数 MB，不值）。

@@ -15,6 +15,7 @@ import {
 
 export interface Room {
   code: string;
+  allowIpJoin: boolean;
   hostPeerId: string;
   createdAt: number;
   peers: Map<string, PeerInfo>;
@@ -88,7 +89,7 @@ export class RoomManager {
     };
   }
 
-  createRoom(peerId: string, rawNickname: unknown): RoomResult {
+  createRoom(peerId: string, rawNickname: unknown, allowIpJoin = false): RoomResult {
     if (this.#peerRoom.has(peerId)) {
       return {
         ok: false,
@@ -103,6 +104,7 @@ export class RoomManager {
     const self = this.#createPeerInfo(peerId, rawNickname, true);
     const room: Room = {
       code,
+      allowIpJoin,
       hostPeerId: peerId,
       createdAt: Date.now(),
       peers: new Map([[peerId, self]]),
@@ -112,6 +114,22 @@ export class RoomManager {
     this.#peerRoom.set(peerId, code);
 
     return { ok: true, session: { roomCode: code, self, others: [] } };
+  }
+
+  joinByIp(peerId: string, rawNickname: unknown): RoomResult {
+    const candidates = [...this.#rooms.values()].filter((room) => room.allowIpJoin);
+    if (candidates.length !== 1) {
+      return {
+        ok: false,
+        error: {
+          code: ProtocolErrorCode.RoomNotFound,
+          message: candidates.length === 0
+            ? '对方尚未创建 IP 共享房间，请让共享端点击「创建 IP 共享房间」；普通房间请填写房间码'
+            : '对方有多个 IP 共享房间，请填写房间码后连接',
+        },
+      };
+    }
+    return this.joinRoom(candidates[0]!.code, peerId, rawNickname);
   }
 
   joinRoom(rawCode: string, peerId: string, rawNickname: unknown): RoomResult {

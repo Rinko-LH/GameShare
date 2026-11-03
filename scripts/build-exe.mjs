@@ -2,24 +2,9 @@
 /**
  * 打包 Windows 安装包（根 package.json 的 `npm run build:exe` 指向这里）。
  *
- * 存在的唯一理由：electron-builder 用环境变量 ELECTRON_BUILDER_CACHE 决定
- * 去哪里找它自己下载的构建工具（winCodeSign / nsis），而本机完整缓存在
- * E:/electron-builder-cache。默认位置 %LOCALAPPDATA%\electron-builder\Cache
- * 是空的，于是它会联网去 github.com 下载 winCodeSign —— 本机访问 github.com
- * 返回 502，打包就会在 rcedit 阶段莫名其妙地失败：
- *
- *   ⨯ Get ".../winCodeSign-2.6.0.7z": Bad Gateway
- *   ⨯ app-builder.exe process failed ERR_ELECTRON_BUILDER_CANNOT_EXECUTE
- *
- * 看着像网络问题，实际是缓存路径问题（缓存命中时根本不联网）。
- *
- * 两条走不通的路，别再试：
- *   1. `.npmrc` 里写 electron_builder_cache —— 无效，builder-util 只读
- *      process.env.ELECTRON_BUILDER_CACHE，没有 npm_config_ 前缀的回退。
- *   2. build.directories.cache —— electron-builder 25.x 的 schema 不认，
- *      直接报 "directories has an unknown property 'cache'"。
- *
- * 所以只剩「在启动子进程之前把变量设好」这一条路。
+ * 构建主进程、渲染进程并生成安装包；支持把其他目标传给 electron-builder。
+ * winCodeSign / NSIS 缓存默认放在工作区 .cache/electron-builder，避免依赖
+ * 某台开发机的盘符。已有缓存可通过 ELECTRON_BUILDER_CACHE 指定。
  *
  * 用法：
  *   npm run build:exe
@@ -34,8 +19,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
 const DESKTOP = path.join(ROOT, 'apps', 'desktop');
 
-/** 本机完整缓存在这里（含 winCodeSign-2.6.0 与 nsis）。可用环境变量覆盖。 */
-const CACHE_DIR = process.env.ELECTRON_BUILDER_CACHE ?? 'E:/electron-builder-cache';
+/** Cache inside the workspace by default; existing shared caches can be selected via the environment. */
+const CACHE_DIR = process.env.ELECTRON_BUILDER_CACHE ?? path.join(ROOT, '.cache', 'electron-builder');
 
 const env = { ...process.env, ELECTRON_BUILDER_CACHE: CACHE_DIR };
 

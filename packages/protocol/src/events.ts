@@ -86,11 +86,14 @@ export type AckResponse<T> =
 
 export interface CreateRoomPayload {
   nickname: string;
+  /** Explicit opt-in for LAN IP-only joining; ordinary rooms stay code-only. */
+  allowIpJoin?: boolean;
 }
 
 export interface JoinRoomPayload {
   roomCode: string;
   nickname: string;
+  joinByIp?: boolean;
 }
 
 /** 离开房间时可附带原因，服务端会广播给同房间其他人 */

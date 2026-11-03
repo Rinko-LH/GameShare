@@ -82,6 +82,7 @@ const params = new URLSearchParams(location.search);
 const INDEX = Number(params.get('index') ?? '0');
 const TOTAL = Number(params.get('total') ?? '2');
 const SIGNALING_URL = params.get('url') ?? 'http://127.0.0.1:8080';
+const IP_MODE = params.get('ip') === '1';
 const TIMEOUT_MS = Number(params.get('timeout') ?? '60000');
 /**
  * 「断开一端」场景：所有人确认收到画面后，主进程会真实销毁最后一个窗口。
@@ -286,7 +287,8 @@ async function main(): Promise<void> {
   bridge?.ready();
   await bridge?.waitGo();
 
-  session.connect(SIGNALING_URL);
+  if (IP_MODE) await session.connectAndWait(SIGNALING_URL);
+  else session.connect(SIGNALING_URL);
   await waitFor(
     () => session.getState().connection.state === 'connected',
     20_000,
@@ -296,7 +298,7 @@ async function main(): Promise<void> {
 
   let roomCode: string;
   if (INDEX === 0) {
-    const data = await session.createRoom(NICKNAME);
+    const data = await session.createRoom(NICKNAME, IP_MODE);
     roomCode = data.roomCode;
     say(`已创建房间 ${roomCode}`);
 
@@ -319,7 +321,7 @@ async function main(): Promise<void> {
   } else {
     if (!bridge) throw new Error('缺少 harnessBridge，无法接收房间码');
     roomCode = await withTimeout(bridge.waitRoomCode(), 30_000, '等待房间码');
-    await session.joinRoom(roomCode, NICKNAME);
+    await session.joinRoom(IP_MODE ? '' : roomCode, NICKNAME, IP_MODE);
     say(`已加入房间 ${roomCode}`);
 
     // 进房的那一刻别人已经在共享 —— 这几个格子必须显示成「共享中」。

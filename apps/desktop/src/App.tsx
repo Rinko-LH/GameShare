@@ -17,6 +17,7 @@ import type { LinkStats, RemoteTracks } from './rtc/types';
 import type { LinkDiagnosis } from './rtc/PeerLink';
 import { floatBallProps, floatDragProps, floatGripProps } from './float-drag';
 import { ShareSession } from './session/ShareSession';
+import { IpConnectPanel } from './IpConnectPanel';
 import type { ConnectionState } from './signaling/SignalingClient';
 import { getLang, setLang, subscribeLang, t as lookup, fmt } from './i18n';
 import type { I18nKey } from './i18n';
@@ -137,6 +138,7 @@ export default function App() {
   const t = useI18n();
 
   const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING_URL);
+  const [selectedInviteAddress, setSelectedInviteAddress] = useState('');
   const [nickname, setNickname] = useState('');
   const [joinCode, setJoinCode] = useState('');
   // 加入失败要在界面上看得见：原先只写进默认收起的日志面板，
@@ -421,7 +423,7 @@ export default function App() {
 
   /** 邀请信息里给对方填的信令地址：隧道优先，其次同一局域网 */
   const inviteAddress =
-    tunnelUrl ?? embeddedServer?.lanUrls[0] ?? embeddedServer?.localUrl ?? null;
+    selectedInviteAddress || (tunnelUrl ?? embeddedServer?.lanUrls[0] ?? embeddedServer?.localUrl ?? null);
 
   /* ---------------- 内置信令服务器 ---------------- */
 
@@ -716,7 +718,13 @@ export default function App() {
       session.disconnect();
       return;
     }
-    session.connect(serverUrl.trim() || DEFAULT_SIGNALING_URL);
+    try {
+      session.connect(serverUrl.trim() || DEFAULT_SIGNALING_URL);
+      setServerUrl(session.serverUrl);
+    } catch (err) {
+      setJoinError(ShareSession.describeError(err));
+      session.pushLog(ShareSession.describeError(err));
+    }
   }, [connected, connection.state, serverUrl, session]);
 
   const run = useCallback(
@@ -1577,6 +1585,9 @@ export default function App() {
       >
         {!sideCollapsed && (
         <div className="app__side">
+          <IpConnectPanel session={session} nickname={nickname} disabled={inRoom || connection.state === 'connecting'}
+            busy={busy} server={embeddedServer} inviteAddress={inviteAddress}
+            onInviteAddress={setSelectedInviteAddress} onServerUrl={setServerUrl} onBusy={setBusy} onServer={setEmbeddedServer} />
           {/* ---- 连接：地址和昵称各一行输入框，其余信息全部让位 ---- */}
           <section className="panel panel--tight">
             <div className="row">
@@ -1593,6 +1604,7 @@ export default function App() {
                 type="button"
                 className={connected ? 'btn btn--ghost btn--shrink' : 'btn btn--primary btn--shrink'}
                 onClick={handleConnect}
+                disabled={busy}
               >
                 {connected || connection.state === 'connecting' ? t('conn.disconnect') : t('conn.connect')}
               </button>
