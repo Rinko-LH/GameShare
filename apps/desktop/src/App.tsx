@@ -2742,7 +2742,7 @@ function VideoTile({
           ) : inbound ? (
             <>
               <span>
-                {inbound.frameWidth}x{inbound.frameHeight}
+                {inbound.frameHeight > 0 ? `${inbound.frameHeight}p` : '—'}
               </span>
               <span>{inbound.framesPerSecond} fps</span>
               <span>{formatBitrate(inbound.bitrateBps)}</span>
