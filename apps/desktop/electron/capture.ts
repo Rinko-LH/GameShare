@@ -327,7 +327,7 @@ export function registerCaptureHandlers(): void {
   );
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (permission !== 'media' && permission !== 'display-capture') {
+    if (permission !== 'media' && permission !== 'display-capture' && permission !== 'fullscreen') {
       callback(false);
       return;
     }

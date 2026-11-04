@@ -13,7 +13,8 @@ export type Lang = 'zh' | 'en';
 
 const ZH = {
   'view.fullscreen': '全屏模式',
-  'view.mainViewHint': '收起侧栏并放大一路共享画面；再次点击恢复侧栏和网格，窗口大小保持不变',
+  'view.mainViewHint': '画面共享区无边框全屏；点击悬浮退出按钮或按 Esc 退出',
+  'view.exitFullscreen': '退出全屏',
   'view.opacity': '全部浮窗透明度',
   'view.floatingActive': '正在使用独立浮窗',
   'view.floatingCount': '当前显示 {n} 个成员画面浮窗',
@@ -318,8 +319,9 @@ export type I18nKey = keyof typeof ZH;
 type Dict = Record<I18nKey, string>;
 
 const EN: Dict = {
-  'view.fullscreen': 'Wide view',
-  'view.mainViewHint': 'Hide the sidebar and enlarge a shared view; click again to restore the sidebar and grid without resizing the window',
+  'view.fullscreen': 'Fullscreen',
+  'view.mainViewHint': 'Show the shared screens in borderless fullscreen; use the floating exit button or press Esc to exit',
+  'view.exitFullscreen': 'Exit fullscreen',
   'view.opacity': 'All floating windows opacity',
   'view.floatingActive': 'Independent floating windows are active',
   'view.floatingCount': '{n} shared views are open',

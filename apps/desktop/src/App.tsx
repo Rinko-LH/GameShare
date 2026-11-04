@@ -185,6 +185,19 @@ export default function App() {
 
   /** 主窗口画面区；独立浮窗时保留隐藏视频层供帧泵取帧。 */
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const [stageFullscreen, setStageFullscreen] = useState(false);
+
+  useEffect(() => {
+    const syncFullscreen = (): void => {
+      setStageFullscreen(document.fullscreenElement === stageRef.current);
+    };
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    return () => document.removeEventListener('fullscreenchange', syncFullscreen);
+  }, []);
+
+  const exitStageFullscreen = async (): Promise<void> => {
+    if (document.fullscreenElement) await document.exitFullscreen();
+  };
 
   /* ---- 左侧折叠状态：默认全收，让核心操作在首屏就能看到 ---- */
   const [serverOpen, setServerOpen] = useState(false);
@@ -569,16 +582,10 @@ export default function App() {
     setFloatBusy(true);
     try {
       if (isFloat && window.gameShare?.windowMode) setFloatWindow(await window.gameShare.windowMode.setEnabled(false));
-      const collapsed = isFloat || !sideCollapsed;
-      if (collapsed) {
-        const selected = room?.peers.find((peer) => peer.peerId === focusedPeerId && remoteSharing[peer.peerId]);
-        const firstSharing = room?.peers.find((peer) => remoteSharing[peer.peerId]);
-        setFocusedPeerId((selected ?? firstSharing)?.peerId ?? null);
-      } else {
-        setFocusedPeerId(null);
-      }
-      setSideCollapsed(collapsed);
-      window.localStorage.setItem('gs.sidebarCollapsed', collapsed ? '1' : '0');
+      if (document.fullscreenElement) await exitStageFullscreen();
+      else await stageRef.current?.requestFullscreen();
+    } catch (err) {
+      session.pushLog(ShareSession.describeError(err));
     } finally { setFloatBusy(false); }
   };
 
@@ -964,6 +971,10 @@ export default function App() {
 
   const members: PeerInfo[] = room ? [room.self, ...room.peers] : [];
   const remotePeers = useMemo(() => (room ? room.peers : []), [room]);
+  // 按实际渲染的画面数量排网格；不足一行的格子留空。
+  const gridTileCount = remotePeers.length + (sharing && showSelf ? 1 : 0);
+  const gridColumns = Math.max(1, Math.ceil(Math.sqrt(gridTileCount)));
+  const gridRows = Math.max(1, Math.ceil(gridTileCount / gridColumns));
 
   /* ---------------- 静音 ---------------- */
 
@@ -1020,11 +1031,11 @@ export default function App() {
   useEffect(() => {
     if (!focusedPeerId) return undefined;
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setFocusedPeerId(null);
+      if (event.key === 'Escape' && !document.fullscreenElement && !stageFullscreen) setFocusedPeerId(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [focusedPeerId]);
+  }, [focusedPeerId, stageFullscreen]);
 
   /**
    * 放大的画质联动。
@@ -1553,7 +1564,7 @@ export default function App() {
           )}
 
           {floatWindow && <>
-            <button type="button" className={`btn btn--tiny${!isFloat && sideCollapsed ? ' btn--primary' : ''}`} aria-pressed={!isFloat && sideCollapsed} title={t('view.mainViewHint')} disabled={floatBusy} onClick={() => void handleMainView()}>{t('view.fullscreen')}</button>
+            <button type="button" className={`btn btn--tiny${stageFullscreen ? ' btn--primary' : ''}`} aria-pressed={stageFullscreen} title={t('view.mainViewHint')} disabled={floatBusy} onClick={() => void handleMainView()}>{t('view.fullscreen')}</button>
 
           </>}
 
@@ -1600,7 +1611,7 @@ export default function App() {
         className="app__body"
         style={
           // 常规模式：三列（侧栏宽可拖拽调、收起时切两列）。
-          { gridTemplateColumns: sideCollapsed ? '6px 1fr' : `${sideWidth}px 6px 1fr` }
+          { gridTemplateColumns: sideCollapsed ? '34px 1fr' : `${sideWidth}px 34px 1fr` }
         }
       >
         {!sideCollapsed && (
@@ -2342,7 +2353,7 @@ export default function App() {
         </div>
         )}
 
-        {/* 侧栏拖拽条：条上按住左右拖调宽度，中间把手一键收起/展开侧栏。
+        {/* 侧栏拖拽条：左侧细缝拖动调宽，按钮从细缝向右凸出，一键收起/展开侧栏。
             收起后侧栏整列让位给画面区，把手仍留在这里点得回来。 */}
         <div
           className={`app__resizer${sideDragging ? ' app__resizer--dragging' : ''}`}
@@ -2352,14 +2363,16 @@ export default function App() {
           onPointerCancel={onResizerUp}
           title={sideCollapsed ? t('sidebar.expand') : t('sidebar.resizeTitle')}
         >
-          <div
+          <button
+            type="button"
             className="app__resizer__grip"
-            role="button"
             aria-label={sideCollapsed ? t('sidebar.expand') : t('sidebar.collapse')}
+            aria-expanded={!sideCollapsed}
+            title={sideCollapsed ? t('sidebar.expand') : t('sidebar.collapse')}
             onClick={toggleSideCollapsed}
           >
             {sideCollapsed ? '⟩' : '⟨'}
-          </div>
+          </button>
         </div>
 
         {/* 浮窗里整块画面区就是**拖动区**：窗口是 `setFocusable(false)` 的，标题栏拖动
@@ -2371,6 +2384,11 @@ export default function App() {
           className={`app__stage${isFloat ? " stage--tiles" : ""}`}
           ref={stageRef}
         >
+          {stageFullscreen && (
+            <button type="button" className="stage__exit-fullscreen btn" onClick={() => void exitStageFullscreen()}>
+              {t('view.exitFullscreen')} · Esc
+            </button>
+          )}
           {isFloat && inRoom && <div className="tiles-control-notice">
             <h2>{t('view.floatingActive')}</h2>
             <p>{fmt('view.floatingCount', { n: tiles?.tiles.length ?? 0 })}</p>
@@ -2395,7 +2413,10 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="grid">
+            <div className="grid" style={{
+              gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${gridRows}, minmax(0, 1fr))`,
+            }}>
               {sharing && showSelf && renderSelfTile('grid')}
               {remotePeers.map((peer) => renderRemoteTile(peer, 'grid'))}
             </div>
