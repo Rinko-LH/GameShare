@@ -96,6 +96,43 @@ try {
   }
   assert.equal(await evaluate('document.querySelectorAll(".mode-card")[3].disabled'), false, 'Experimental mode must be testable');
   await selectMode(3);
+  assert.equal(await evaluate('document.querySelector("#sidebar-tab-room").getAttribute("aria-selected")'), 'true');
+  await evaluate('document.querySelector("#sidebar-tab-share").click()');
+  assert.equal(await evaluate('document.querySelector("#sidebar-page-room").hidden'), true);
+  assert.equal(await evaluate('document.querySelector("#sidebar-page-share").hidden'), false);
+  await evaluate('document.querySelector("#sidebar-tab-room").click()');
+  if (process.argv.includes('--sidebar-only')) {
+    await openModes(); await selectMode(0);
+    host = io('http://[::1]:8080', { reconnection: false });
+    await new Promise((resolve, reject) => { host.once('connect', resolve); host.once('connect_error', reject); });
+    const result = await new Promise((resolve, reject) => host.timeout(3000).emit('create-room', { nickname: 'Sidebar test host' }, (err, result) => err ? reject(err) : resolve(result)));
+    assert.equal(result.ok, true);
+    await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
+    const invite = `GS1.${Buffer.from(JSON.stringify({ server: 'http://[::1]:8080', room: result.data.roomCode, mode: 'lan', mediaPolicy: 'local-auto' })).toString('base64')}`;
+    await evaluate(`(() => { const input = document.querySelector('.ip-connect textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(invite)}); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
+    await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'Invitation not ready');
+    await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
+    await until(() => evaluate('document.querySelector("#sidebar-tab-share").getAttribute("aria-selected") === "true"'), 'Joining should open sharing');
+    assert.equal(await evaluate('document.querySelector(".roomcode__value").textContent'), result.data.roomCode);
+    await evaluate('document.querySelector("[data-video-bitrate]").value = "1000000"; document.querySelector("[data-video-bitrate]").dispatchEvent(new Event("change", {bubbles:true}))');
+    await evaluate('Array.from(document.querySelectorAll("#sidebar-page-share button")).find(b => b.title.includes("测试") || b.title.includes("test")).click()');
+    await until(() => evaluate('Boolean(document.querySelector(".tag--live"))'), 'Test sharing did not start');
+    await evaluate('document.querySelector("#sidebar-tab-room").click()');
+    await sleep(250);
+    fs.writeFileSync(path.join(output, 'sidebar-room.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
+    await evaluate('document.querySelector("#sidebar-tab-share").click()');
+    assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").value'), '1000000');
+    assert.equal(await evaluate('Boolean(document.querySelector("#sidebar-page-share .tag--live"))'), true, 'Changing tabs must preserve screen sharing');
+    assert.equal(await evaluate('Boolean(document.querySelector(".sidebar-header button[title]"))'), true);
+    await sleep(250);
+    fs.writeFileSync(path.join(output, 'sidebar-sharing.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
+    await evaluate('document.querySelector("#sidebar-tab-share").dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowLeft", bubbles:true}))');
+    assert.equal(await evaluate('document.activeElement.id'), 'sidebar-tab-room');
+    await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.textContent.trim())).click()');
+    await until(() => evaluate('document.querySelector("#sidebar-tab-room").getAttribute("aria-selected") === "true" && !document.querySelector(".roomcode__value")'), 'Leaving should restore connection page');
+    console.log('PASS: sidebar pages, automatic join navigation, live sharing and bitrate preserved across tabs, persistent invite, keyboard navigation, leaving room');
+    await evaluate('setTimeout(() => window.gameShare.windowControl.close(), 100); true');
+  } else {
   assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /实验模式/);
   assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").value'), '', 'Default bitrate is automatic');
   assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").options.length'), 8);
@@ -124,7 +161,18 @@ try {
   await evaluate(`(() => { const select = document.querySelector('.media-ip-select'); select.value = ${JSON.stringify(mixedStatus.mediaAddresses[0].address)}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await evaluate(`(() => { const select = document.querySelector('.ip-connect select:not(.media-ip-select)'); select.value = ${JSON.stringify(mixedStatus.lanUrls[0])}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   await evaluate('Array.from(document.querySelectorAll(".ip-connect button")).find(b => b.innerText === "创建房间").click()');
-  await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), 'Mixed IP room was not created');
+  await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), 'Mixed IP room was not created').catch(async (error) => {
+    console.error(await evaluate('document.querySelector(".app__side").innerText'));
+    throw error;
+  });
+  await until(() => evaluate('document.querySelector("#sidebar-tab-share").getAttribute("aria-selected") === "true"'), 'Entering a room should open screen sharing');
+  const roomBeforeTabs = await evaluate('document.querySelector(".roomcode__value").innerText');
+  await evaluate('document.querySelector("#sidebar-tab-room").click(); document.querySelector("#sidebar-tab-share").click()');
+  assert.equal(await evaluate('document.querySelector(".roomcode__value").innerText'), roomBeforeTabs, 'Tabs must preserve the room');
+  assert.equal(await evaluate('Boolean(document.querySelector(".sidebar-header button[title]"))'), true, 'Invite must remain accessible on sharing page');
+  fs.writeFileSync(path.join(output, 'sidebar-sharing.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
+  await evaluate('document.querySelector("#sidebar-tab-room").click()');
+  fs.writeFileSync(path.join(output, 'sidebar-room.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
   assert.equal(await evaluate('document.querySelector(".media-ip-select").disabled'), true);
   fs.writeFileSync(path.join(output, 'mixed-mode.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
   await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.innerText.trim())).click()');
@@ -267,6 +315,22 @@ try {
   const screenshot = await command('Page.captureScreenshot');
   fs.writeFileSync(path.join(output, 'packaged-ip-panel.png'), Buffer.from(screenshot.data, 'base64'));
   await evaluate('setTimeout(() => window.gameShare.windowControl.close(), 100); true');
+  }
+} catch (error) {
+  if (ws?.readyState === 1) {
+    const id = 999999;
+    ws.send(JSON.stringify({ id, method: 'Page.captureScreenshot' }));
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 2000);
+      ws.addEventListener('message', ({ data }) => {
+        const result = JSON.parse(data);
+        if (result.id !== id) return;
+        if (result.result?.data) fs.writeFileSync(path.join(output, 'failure.png'), Buffer.from(result.result.data, 'base64'));
+        clearTimeout(timer); resolve();
+      });
+    });
+  }
+  throw error;
 } finally {
   visitor?.disconnect();
   host?.disconnect();

@@ -318,9 +318,20 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow-y: auto;
+  overflow: hidden;
+  min-height: 0;
   padding-right: 2px;
 }
+
+.sidebar-header { flex-shrink: 0; display: grid; gap: 8px; padding: 4px 0; }
+.sidebar-summary, .sidebar-warning { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; flex-wrap: wrap; }
+.sidebar-warning { color: var(--warn); }
+.sidebar-tabs { display: flex; gap: 6px; }
+.sidebar-tabs > button { flex: 1; }
+.sidebar-content { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.sidebar-page { display: flex; flex-direction: column; gap: 8px; }
+.sidebar-page[hidden] { display: none; }
+.sidebar-tabs > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .app__stage:fullscreen {
   width: 100%;

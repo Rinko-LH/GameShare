@@ -207,6 +207,7 @@ export default function App() {
   /* ---- 左侧折叠状态：默认全收，让核心操作在首屏就能看到 ---- */
   const [serverOpen, setServerOpen] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
+  const [sidePage, setSidePage] = useState<'room' | 'share'>('room');
 
   /**
    * 信令地址输入框的显隐。默认收起：地址是「网络详情」，对傻瓜流程是噪音，
@@ -423,6 +424,9 @@ export default function App() {
   } = state;
   const connected = connection.state === 'connected';
   const inRoom = room !== null;
+  useEffect(() => {
+    setSidePage(inRoom ? 'share' : 'room');
+  }, [inRoom]);
 
   // 房主看实际房间进度；后台服务启动不等于已经创建房间。
   const headerStatus = connectionRole === 'host'
@@ -1611,6 +1615,32 @@ export default function App() {
       >
         {!sideCollapsed && (
         <div className="app__side">
+          <div className="sidebar-header">
+            <div className="sidebar-summary" aria-live="polite">
+              <span>{inRoom
+                ? connected ? fmt('sidebar.roomSummary', { n: members.length }) : t('status.host.disconnected')
+                : headerStatus.label}</span>
+              {inRoom && <button type="button" className="btn btn--tiny" onClick={() => void copyInvite()} disabled={!validInviteAddress || !connected} title={t('room.copyInviteTitle')}>
+                {copied === 'invite' ? t('room.copied') : t('room.copyInvite')}
+              </button>}
+            </div>
+            <div className="sidebar-tabs" role="tablist" aria-label={t('sidebar.controls')}>
+              {(['room', 'share'] as const).map((page) => <button key={page} id={`sidebar-tab-${page}`} type="button" role="tab" tabIndex={sidePage === page ? 0 : -1} aria-selected={sidePage === page} aria-controls={`sidebar-page-${page}`} className={`btn${sidePage === page ? ' btn--primary' : ' btn--ghost'}`} onClick={() => setSidePage(page)} onKeyDown={(event) => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                event.preventDefault();
+                const next = event.key === 'Home' ? 'room' : event.key === 'End' ? 'share' : page === 'room' ? 'share' : 'room';
+                setSidePage(next);
+                document.getElementById(`sidebar-tab-${next}`)?.focus();
+              }}>
+                {t(page === 'room' ? 'sidebar.room' : 'sidebar.share')}
+              </button>)}
+            </div>
+            {sidePage === 'share' && !connected && <div className="sidebar-warning">
+              <span>{inRoom ? t('status.host.disconnected') : t('share.needRoom')}</span>
+              <button type="button" className="btn btn--tiny" onClick={() => setSidePage('room')}>{t('sidebar.viewRoom')}</button>
+            </div>}
+          </div>
+          <div className="sidebar-content">
           {isFloat && floatWindow && <section className="panel panel--tight">
             <h2>{t('float.mode')}</h2>
             <label className="view-opacity"><span>{t('view.opacity')}</span>
@@ -1619,6 +1649,7 @@ export default function App() {
             </label>
           </section>}
 
+          <div id="sidebar-page-room" className="sidebar-page" role="tabpanel" aria-labelledby="sidebar-tab-room" hidden={sidePage !== 'room'}>
           {!inRoom && <label className="panel panel--tight ip-connect__field"><span className="hint">你的昵称（可不填）</span>
             <input className="field__input field__input--compact" value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={16} disabled={busy} placeholder="朋友会看到的名字" />
           </label>}
@@ -2027,19 +2058,6 @@ export default function App() {
               <>
                 <div className="roomcode">
                   <span className="roomcode__value">{room.roomCode}</span>
-                  {/* 只留「复制邀请」一个复制入口：邀请里本来就有房间码，粘贴端自动解析，
-                      纯码复制没有邀请覆盖不了的场景（已连同一信令时只填码、口头报码看一眼即可）。 */}
-                  <button
-                    type="button"
-                    className={
-                      copied === 'invite' ? 'btn btn--tiny btn--done' : 'btn btn--tiny btn--primary'
-                    }
-                    onClick={() => void copyInvite()}
-                    disabled={!validInviteAddress}
-                    title={t('room.copyInviteTitle')}
-                  >
-                    {copied === 'invite' ? t('room.copied') : t('room.copyInvite')}
-                  </button>
                 </div>
 
                 <ul className="members">
@@ -2078,6 +2096,8 @@ export default function App() {
             )}
           </section>}
 
+          </div>
+          <div id="sidebar-page-share" className="sidebar-page" role="tabpanel" aria-labelledby="sidebar-tab-share" hidden={sidePage !== 'share'}>
           {/* ---- 语音 ---- */}
           <section className="panel panel--tight">
             <h2>{t('mic.title')}</h2>
@@ -2319,6 +2339,7 @@ export default function App() {
             )}
           </section>
 
+          </div>
           {/* ---- 日志：默认收起 ---- */}
           <section className="panel panel--tight">
             <div className="collapse__head">
@@ -2347,6 +2368,7 @@ export default function App() {
               </div>
             )}
           </section>
+          </div>
         </div>
         )}
 

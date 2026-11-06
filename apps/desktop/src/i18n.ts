@@ -12,6 +12,11 @@
 export type Lang = 'zh' | 'en';
 
 const ZH = {
+  'sidebar.controls': '操作设置',
+  'sidebar.room': '房间连接',
+  'sidebar.share': '屏幕共享',
+  'sidebar.roomSummary': '已连接 · {n} 人',
+  'sidebar.viewRoom': '查看房间连接',
   'view.fullscreen': '全屏模式',
   'view.mainViewHint': '画面共享区无边框全屏；点击悬浮退出按钮或按 Esc 退出',
   'view.exitFullscreen': '退出全屏',
@@ -493,6 +498,11 @@ const EN: Dict = {
   'log.title': 'Log',
   'log.empty': 'No logs yet',
 
+  'sidebar.controls': 'Controls',
+  'sidebar.room': 'Room connection',
+  'sidebar.share': 'Screen sharing',
+  'sidebar.roomSummary': 'Connected · {n} members',
+  'sidebar.viewRoom': 'View connection',
   'sidebar.expand': 'Expand sidebar',
   'sidebar.collapse': 'Collapse sidebar',
   'sidebar.resizeTitle': 'Drag to resize · click the grip to collapse',
