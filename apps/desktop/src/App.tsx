@@ -1,3 +1,4 @@
+import { VIDEO_BITRATE_OPTIONS, normalizeVideoBitrateLimit, readVideoBitrateLimit, saveVideoBitrateLimit } from './video-bitrate';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { PeerInfo, QualityLevel } from '@game-share/protocol';
@@ -411,6 +412,7 @@ export default function App() {
     sharing,
     captureLabel,
     shareFps,
+    videoBitrateLimit,
     hasAudio,
     appAudioEnabled,
     audioMode,
@@ -917,6 +919,13 @@ export default function App() {
 
   /* ---- 共享帧率 ---- */
 
+  useEffect(() => { session.setVideoBitrateLimit(readVideoBitrateLimit()); }, [session]);
+  const changeVideoBitrateLimit = useCallback((raw: string) => {
+    const limit = normalizeVideoBitrateLimit(raw);
+    session.setVideoBitrateLimit(limit);
+    saveVideoBitrateLimit(limit);
+  }, [session]);
+
   // 上次会话选过的帧率：挂载时读回一次。非法值 / 缺失一律保持默认 30。
   // 必须在进房前就落到 session 上 —— 「先改偏好后进房」的时序由 #syncMesh 兜底。
   useEffect(() => {
@@ -1018,7 +1027,7 @@ export default function App() {
    * 源端对每一路观看者独立编码，所以「我放大谁」只影响「他 → 我」这一条链路，
    * 别人看到的档位不受影响。之所以顺手把其余几路降到 THUMBNAIL：
    * 四人场景下三路 540p 已经吃掉大半上行，不降档的话放大这一路也拿不到 1080p。
-   * 还原时统一回 GRID。
+   * 还原时统一回 GRID。浮窗模式始终请求 THUMBNAIL，不随焦点或窗口大小提升档位。
    *
    * 请求是幂等的，所以成员变化时整轮重发一次，顺便把新加入的人带上正确档位。
    */
@@ -1026,6 +1035,7 @@ export default function App() {
     if (!inRoom) return;
     for (const peer of remotePeers) {
       const level =
+        isFloat ? BACKGROUND_QUALITY :
         focusedPeerId === null
           ? GRID_QUALITY
           : peer.peerId === focusedPeerId
@@ -1033,11 +1043,20 @@ export default function App() {
             : BACKGROUND_QUALITY;
       session.requestQualityFrom(peer.peerId, level);
     }
-  }, [focusedPeerId, inRoom, session, remotePeers]);
+  }, [isFloat, focusedPeerId, inRoom, session, remotePeers]);
 
   /* ---------------- 渲染 ---------------- */
 
-  // 共享状态下这套列表要能反复用（initial 选源 / 共享中换源），抽出来避免两处各写一遍
+  const bitrateControl = <label className="ip-connect__field">
+    <span className="hint">{t('share.bitrateLabel')}</span>
+    <select className="field__input field__input--compact" data-video-bitrate aria-label={t('share.bitrateLabel')} value={videoBitrateLimit ?? ''} onChange={e => changeVideoBitrateLimit(e.target.value)}>
+      <option value="">{t('share.bitrateAuto')}</option>
+      {VIDEO_BITRATE_OPTIONS.map(limit => <option key={limit} value={limit}>{limit / 1_000_000} Mbps</option>)}
+    </select>
+    <span className="hint hint--dim">{t('share.bitrateHint')}</span>
+  </label>;
+
+  // 共享状态下这套列表要能反复用（initial 选源 / 共享中换源）。
   const sourceList = sources.length > 0 && (
     <>
       <ul className="sources">
@@ -2223,6 +2242,7 @@ export default function App() {
                   ))}
                 </div>
                 <p className="hint hint--dim">{t('share.fpsHint')}</p>
+                {bitrateControl}
 
                 {pickerOpen && sourceError && <p className="hint hint--warn">{sourceError}</p>}
                 {pickerOpen && sourceList}
@@ -2266,6 +2286,7 @@ export default function App() {
                   ))}
                 </div>
 
+                {bitrateControl}
                 <div className="row">
                   <button
                     type="button"

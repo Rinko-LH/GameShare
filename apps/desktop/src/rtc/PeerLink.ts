@@ -1,3 +1,4 @@
+import { normalizeVideoBitrateLimit } from '../video-bitrate';
 import { allowsMediaCandidate, normalizedIp, restrictMediaSdp } from './media-ip';
 import {
   DEFAULT_QUALITY,
@@ -138,6 +139,7 @@ export interface PeerLinkOptions {
   remotePeerId: string;
   signaling: PeerSignaling;
   iceServers: IceServerConfig[];
+  videoBitrateLimit?: number | null;
   selectedMediaIp?: string | null;
   /**
    * 采集源的实际编码高度。
@@ -270,6 +272,8 @@ export class PeerLink {
   #desiredQuality: QualityLevel = DEFAULT_QUALITY;
   /** 用户选择的共享帧率（30/60/120）；null = 未选择，按档位默认走 */
   #userFps: number | null = null;
+  #videoBitrateLimit: number | null = null;
+  #qualityUpdates: Promise<void> = Promise.resolve();
   #appliedQuality: QualityLevel | null = null;
   #qualityLogDone = false;
   #directionRepairAttempts = 0;
@@ -316,6 +320,7 @@ export class PeerLink {
 
   constructor(opts: PeerLinkOptions) {
     this.remotePeerId = opts.remotePeerId;
+    this.#videoBitrateLimit = normalizeVideoBitrateLimit(opts.videoBitrateLimit);
     this.#selectedMediaIp = opts.selectedMediaIp ?? null;
     this.#signaling = opts.signaling;
     this.#getSourceHeight = opts.getSourceHeight ?? (() => null);
@@ -1204,7 +1209,19 @@ export class PeerLink {
     await this.#applyQuality();
   }
 
-  async #applyQuality(): Promise<void> {
+  async setVideoBitrateLimit(value: number | null): Promise<void> {
+    this.#videoBitrateLimit = normalizeVideoBitrateLimit(value);
+    await this.#applyQuality();
+  }
+
+  // Serialize sender parameters so a stale asynchronous update cannot undo a newer limit.
+  #applyQuality(): Promise<void> {
+    const update = this.#qualityUpdates.then(() => this.#applyQualityNow());
+    this.#qualityUpdates = update.catch(() => undefined);
+    return update;
+  }
+
+  async #applyQualityNow(): Promise<void> {
     if (this.#closed) return;
 
     const sender = this.#transceivers.get('video')?.sender;
@@ -1222,7 +1239,8 @@ export class PeerLink {
     const scaleDown = computeScaleResolutionDownBy(sourceHeight, profile.targetHeight);
     const userFps = this.#userFps ?? profile.maxFramerate;
     const maxFramerate = computeMaxFramerate(profile, userFps);
-    const maxBitrate = computeMaxBitrate(profile, sourceWidth, sourceHeight, userFps);
+    const automaticBitrate = computeMaxBitrate(profile, sourceWidth, sourceHeight, userFps);
+    const maxBitrate = this.#videoBitrateLimit === null ? automaticBitrate : Math.min(automaticBitrate, this.#videoBitrateLimit);
 
     try {
       const params = sender.getParameters();
@@ -1235,7 +1253,7 @@ export class PeerLink {
       params.encodings[0].scaleResolutionDownBy = scaleDown;
       await sender.setParameters(params);
 
-      this.#appliedQuality = this.#desiredQuality;
+      this.#appliedQuality = profile.level;
       this.#log(
         `画质 ${this.remotePeerId} → ${profile.label}（scaleDown=${scaleDown.toFixed(3)}，` +
           `base=${sourceHeight ?? 'unknown'}p，fps≤${maxFramerate}，cap=${Math.round(maxBitrate / 1000)}k）`,

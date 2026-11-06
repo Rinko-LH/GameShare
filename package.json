@@ -26,6 +26,7 @@
     "smoke:all": "npm run smoke && npm run smoke:p2p",
     "check:embedded": "node scripts/check-embedded-server.mjs",
     "check:ip": "node scripts/check-ip-connect.mjs",
+    "check:video-bitrate": "node scripts/check-video-bitrate-preferences.mjs && node scripts/run-electron.cjs scripts/check-video-bitrate.cjs",
     "check:connection-modes": "node scripts/check-connection-modes.mjs",
     "check:signaling-origin": "node scripts/check-signaling-origin.mjs",
     "check:mixed-media": "node scripts/run-electron.cjs scripts/check-mixed-media.cjs",

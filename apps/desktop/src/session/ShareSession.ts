@@ -1,3 +1,4 @@
+import { normalizeVideoBitrateLimit } from '../video-bitrate';
 import {
   DEFAULT_QUALITY,
   type PeerInfo,
@@ -115,6 +116,7 @@ export interface SessionState {
   captureLabel: string | null;
   /** 共享帧率偏好（30/60/120）。编码端 maxFramerate 与采集端共同的上限来源 */
   shareFps: number;
+  videoBitrateLimit: number | null;
   /** 本机这次共享是否真的带上了系统声音（采集降级时为 false） */
   hasAudio: boolean;
   /** 应用声音这一条轨当前是否在往外发（关掉后画面照常推） */
@@ -185,6 +187,7 @@ const INITIAL_STATE: SessionState = {
   sharing: false,
   captureLabel: null,
   shareFps: 30,
+  videoBitrateLimit: null,
   hasAudio: false,
   appAudioEnabled: false,
   audioMode: null,
@@ -551,6 +554,7 @@ export class ShareSession {
     if (!this.#mesh) {
       this.#mesh = new MeshManager({
         signaling: this.signaling,
+        videoBitrateLimit: this.#state.videoBitrateLimit,
         // UU/LAN uses reachable local and virtual adapter candidates, avoiding public STUN/TURN routes.
         selectedMediaIp: this.#selectedMediaIp,
         iceServers: this.#lanOnly || this.#selectedMediaIp ? [] : buildIceServers({ turn: turn ? shareTurn(turn) : undefined }),
@@ -943,6 +947,16 @@ export class ShareSession {
     this.signaling.requestQuality(peerId, level);
   }
 
+  /** Set the local video encoder cap for each outgoing viewer link. */
+  setVideoBitrateLimit(value: number | null): void {
+    const limit = normalizeVideoBitrateLimit(value);
+    if (this.#state.videoBitrateLimit === limit) return;
+    this.#patch({ videoBitrateLimit: limit });
+    this.#mesh?.setVideoBitrateLimit(limit);
+    this.pushLog(`每路视频码率上限 → ${limit === null ? '自动' : `${limit / 1_000_000} Mbps`}`);
+  }
+
+
   /**
    * 设置共享帧率（30/60/120）。
    *
@@ -950,6 +964,7 @@ export class ShareSession {
    * 不走观看者请求那条信令。共享中修改即时生效（setParameters），未共享时
    * 只记偏好，等下一次 startShare 应用。
    */
+
   setShareFps(fps: number): void {
     if (this.#state.shareFps === fps) return;
     this.#patch({ shareFps: fps });

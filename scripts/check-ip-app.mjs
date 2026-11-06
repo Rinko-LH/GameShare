@@ -81,7 +81,7 @@ try {
     return response.result.value;
   }
   await until(() => evaluate('Boolean(document.querySelector(".mode-chooser, .ip-connect"))'), 'Connection UI is missing');
-  await evaluate('localStorage.removeItem("gs.connectionMode"); location.reload(); true');
+  await evaluate('localStorage.removeItem("gs.connectionMode"); localStorage.removeItem("gs.videoBitrateLimit"); location.reload(); true');
   await until(() => evaluate('Boolean(document.querySelector(".mode-chooser"))'), 'First launch mode chooser missing');
   assert.equal(await evaluate('document.querySelectorAll(".mode-card").length'), 4);
   fs.writeFileSync(path.join(output, 'mode-chooser.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
@@ -97,6 +97,20 @@ try {
   assert.equal(await evaluate('document.querySelectorAll(".mode-card")[3].disabled'), false, 'Experimental mode must be testable');
   await selectMode(3);
   assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /实验模式/);
+  assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").value'), '', 'Default bitrate is automatic');
+  assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").options.length'), 8);
+  await evaluate(`(() => { const select = document.querySelector('[data-video-bitrate]'); select.value = '1000000'; select.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+  await until(() => evaluate('localStorage.getItem("gs.videoBitrateLimit") === "1000000"'), 'Bitrate preference was not stored');
+  await evaluate('location.reload(); true');
+  await until(() => evaluate('document.querySelector("[data-video-bitrate]")?.value === "1000000"'), 'Bitrate preference was not restored');
+  await evaluate('localStorage.setItem("gs.videoBitrateLimit", "not-a-limit"); location.reload(); true');
+  await until(() => evaluate('document.querySelector("[data-video-bitrate]")?.value === ""'), 'Invalid bitrate preference must fall back to automatic');
+  await evaluate(`(() => { const select = document.querySelector('[data-video-bitrate]'); select.value = '2000000'; select.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+  await until(() => evaluate('localStorage.getItem("gs.videoBitrateLimit") === "2000000"'), 'Changed bitrate preference was not stored');
+  await evaluate(`(() => { const select = document.querySelector('[data-video-bitrate]'); select.value = ''; select.dispatchEvent(new Event('change', {bubbles:true})); })()`);
+  await until(() => evaluate('localStorage.getItem("gs.videoBitrateLimit") === null'), 'Automatic should clear manual preference');
+  console.log('PASS: bitrate presets, selection, reload persistence, invalid preference and restoring automatic');
+
   assert.equal(await evaluate('Boolean(document.querySelector(".diagnostics-panel"))'), false, 'Diagnostic recording UI must be removed');
   assert.equal(await evaluate('Boolean(window.gameShare.diagnostics)'), false, 'Diagnostic export API must be removed');
   assert.equal(await evaluate('document.querySelector(".media-ip-select").value'), '', 'Do not choose a media IP for the user');
@@ -169,6 +183,8 @@ try {
   await openModes(); await selectMode(0);
   host = io('http://[::1]:8080', { reconnection: false });
   await new Promise((resolve, reject) => { host.once('connect', resolve); host.once('connect_error', reject); });
+  const qualityRequests = [];
+  host.on('quality-request', env => qualityRequests.push(env.payload.level));
   const created = await new Promise((resolve, reject) => host.timeout(3000).emit('create-room', { nickname: 'UI test host', allowIpJoin: true }, (err, result) => err ? reject(err) : resolve(result)));
   assert.equal(created.ok, true);
   await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
@@ -188,6 +204,29 @@ try {
   await until(async () => (await evaluate('document.querySelector(".roomcode__value")?.innerText')) === created.data.roomCode, 'IP button did not join the host room');
   assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间连接 · 已连接/);
   console.log(initialRooms > 0 ? 'PASS: actual UI creates/leaves a test room and joins by IP with an explicit code alongside existing rooms' : 'PASS: actual UI creates an IP room, leaves it, and joins by bare IP without a room code');
+  await until(() => qualityRequests.at(-1) === 'GRID', 'Normal view must request GRID');
+  await evaluate('Array.from(document.querySelectorAll(".tile__act")).find(b => /^(放大|Enlarge)$/.test(b.innerText.trim())).click()');
+  await until(() => qualityRequests.at(-1) === 'FOCUS', 'Focused view must request FOCUS');
+  await evaluate('window.gameShare.windowMode.setEnabled(true)');
+  await until(() => qualityRequests.at(-1) === 'THUMBNAIL', 'Float mode must override retained focus with THUMBNAIL');
+  await evaluate('window.gameShare.windowMode.setEnabled(false)');
+  await until(() => qualityRequests.at(-1) === 'FOCUS', 'Leaving float must restore retained focus');
+  await evaluate('window.gameShare.windowMode.setEnabled(true)');
+  await until(() => qualityRequests.at(-1) === 'THUMBNAIL', 'Reentering float must request lowest quality');
+  const beforeRestore = qualityRequests.length;
+  await evaluate('Array.from(document.querySelectorAll(".tile__act")).find(b => /^(还原|Restore)$/.test(b.innerText.trim())).click()');
+  await until(() => qualityRequests.length > beforeRestore && qualityRequests.at(-1) === 'THUMBNAIL', 'Focus changes inside float must stay lowest');
+  visitor = io('http://[::1]:8080', { reconnection: false });
+  const lateQuality = []; visitor.on('quality-request', env => lateQuality.push(env.payload.level));
+  await new Promise((resolve, reject) => { visitor.once('connect', resolve); visitor.once('connect_error', reject); });
+  const lateJoin = await new Promise((resolve, reject) => visitor.timeout(3000).emit('join-room', { roomCode: created.data.roomCode, nickname: 'Late float peer' }, (err, result) => err ? reject(err) : resolve(result)));
+  assert.equal(lateJoin.ok, true);
+  await until(() => lateQuality.at(-1) === 'THUMBNAIL', 'New float members must receive lowest quality request');
+  assert.equal(qualityRequests.at(-1), 'THUMBNAIL');
+  await evaluate('window.gameShare.windowMode.setEnabled(false)');
+  await until(() => qualityRequests.at(-1) === 'GRID' && lateQuality.at(-1) === 'GRID', 'Leaving unfocused float must restore GRID for every member');
+  visitor.disconnect();
+  console.log('PASS: float mode fixes all requests to THUMBNAIL, including focus changes and late members; normal quality restores on exit');
   assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).find(b => b.innerText.includes("· 切换")).disabled'), true, 'Mode switching must be blocked while in a room');
   await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.innerText.trim())).click()');
   await until(() => evaluate('!document.querySelector(".roomcode__value")'), 'Did not leave before invitation test');
