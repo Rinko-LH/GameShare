@@ -1,4 +1,5 @@
 import { normalizeVideoBitrateLimit } from '../video-bitrate';
+import { normalizeVideoResolution, qualityForResolution, type VideoResolution } from '../video-resolution';
 import { allowsMediaCandidate, normalizedIp, restrictMediaSdp } from './media-ip';
 import {
   DEFAULT_QUALITY,
@@ -70,7 +71,7 @@ import {
  *
  * --- 关于画质 ---
  * maxBitrate / maxFramerate / scaleResolutionDownBy 都落在本条链路的 sender 上，
- * 所以 A 被 B 放大到 1080p 时，C 看到的仍是 540p，互不影响。
+ * 桌面发送者将统一的手动分辨率传给所有链路；观看者布局不再改变它。
  */
 
 export interface EncodingParams {
@@ -140,6 +141,7 @@ export interface PeerLinkOptions {
   signaling: PeerSignaling;
   iceServers: IceServerConfig[];
   videoBitrateLimit?: number | null;
+  videoResolution?: VideoResolution;
   selectedMediaIp?: string | null;
   /**
    * 采集源的实际编码高度。
@@ -273,6 +275,9 @@ export class PeerLink {
   /** 用户选择的共享帧率（30/60/120）；null = 未选择，按档位默认走 */
   #userFps: number | null = null;
   #videoBitrateLimit: number | null = null;
+  #videoResolution: VideoResolution | null = null;
+  #appliedSourceWidth: number | null = null;
+  #appliedSourceHeight: number | null = null;
   #qualityUpdates: Promise<void> = Promise.resolve();
   #appliedQuality: QualityLevel | null = null;
   #qualityLogDone = false;
@@ -321,6 +326,10 @@ export class PeerLink {
   constructor(opts: PeerLinkOptions) {
     this.remotePeerId = opts.remotePeerId;
     this.#videoBitrateLimit = normalizeVideoBitrateLimit(opts.videoBitrateLimit);
+    if (opts.videoResolution !== undefined) {
+      this.#videoResolution = normalizeVideoResolution(opts.videoResolution);
+      this.#desiredQuality = qualityForResolution(this.#videoResolution);
+    }
     this.#selectedMediaIp = opts.selectedMediaIp ?? null;
     this.#signaling = opts.signaling;
     this.#getSourceHeight = opts.getSourceHeight ?? (() => null);
@@ -974,8 +983,7 @@ export class PeerLink {
   async #applyLocalTrack(role: TrackRole, track: MediaStreamTrack | null): Promise<void> {
     this.#localTracks[role] = track;
     if (role === 'video' && track) {
-      // 游戏画面运动量大，'motion' 让编码器优先保证帧率与运动清晰度。
-      // 2D / 文字为主的画面切换到 'detail' 更清楚，留给设置项（M10 评估）。
+      // 游戏内容提示；手动分辨率另由 maintain-resolution 参数维持。
       try {
         track.contentHint = 'motion';
       } catch {
@@ -1195,7 +1203,7 @@ export class PeerLink {
 
   /** 只影响「本发送方 → 该观看者」这一条链路 */
   async setQuality(level: QualityLevel): Promise<void> {
-    this.#desiredQuality = level;
+    this.#desiredQuality = this.#videoResolution === null ? level : qualityForResolution(this.#videoResolution);
     await this.#applyQuality();
   }
 
@@ -1211,6 +1219,12 @@ export class PeerLink {
 
   async setVideoBitrateLimit(value: number | null): Promise<void> {
     this.#videoBitrateLimit = normalizeVideoBitrateLimit(value);
+    await this.#applyQuality();
+  }
+
+  async setVideoResolution(height: VideoResolution): Promise<void> {
+    this.#videoResolution = normalizeVideoResolution(height);
+    this.#desiredQuality = qualityForResolution(this.#videoResolution);
     await this.#applyQuality();
   }
 
@@ -1238,7 +1252,7 @@ export class PeerLink {
     const sourceHeight = this.#getSourceHeight() ?? sender.track?.getSettings().height ?? null;
     const scaleDown = computeScaleResolutionDownBy(sourceHeight, profile.targetHeight);
     const userFps = this.#userFps ?? profile.maxFramerate;
-    const maxFramerate = computeMaxFramerate(profile, userFps);
+    const maxFramerate = this.#videoResolution === null ? computeMaxFramerate(profile, userFps) : userFps;
     const automaticBitrate = computeMaxBitrate(profile, sourceWidth, sourceHeight, userFps);
     const maxBitrate = this.#videoBitrateLimit === null ? automaticBitrate : Math.min(automaticBitrate, this.#videoBitrateLimit);
 
@@ -1251,11 +1265,14 @@ export class PeerLink {
       params.encodings[0].maxBitrate = maxBitrate;
       params.encodings[0].maxFramerate = maxFramerate;
       params.encodings[0].scaleResolutionDownBy = scaleDown;
+      if (this.#videoResolution !== null) params.degradationPreference = 'maintain-resolution';
       await sender.setParameters(params);
 
       this.#appliedQuality = profile.level;
+      this.#appliedSourceWidth = sourceWidth;
+      this.#appliedSourceHeight = sourceHeight;
       this.#log(
-        `画质 ${this.remotePeerId} → ${profile.label}（scaleDown=${scaleDown.toFixed(3)}，` +
+        `画质 ${this.remotePeerId} → ${this.#videoResolution === null ? profile.label : `${this.#videoResolution}p（手动）`}（scaleDown=${scaleDown.toFixed(3)}，` +
           `base=${sourceHeight ?? 'unknown'}p，fps≤${maxFramerate}，cap=${Math.round(maxBitrate / 1000)}k）`,
       );
     } catch (err) {
@@ -1293,6 +1310,14 @@ export class PeerLink {
   }
 
   async readStats(): Promise<LinkStats> {
+    // A captured window can resize without replacing its track. Recompute the
+    // scale from its new dimensions while keeping the user's target unchanged.
+    if (this.#videoResolution !== null) {
+      const track = this.#transceivers.get('video')?.sender.track;
+      const width = this.#getSourceWidth() ?? track?.getSettings().width ?? null;
+      const height = this.#getSourceHeight() ?? track?.getSettings().height ?? null;
+      if (height && (height !== this.#appliedSourceHeight || width !== this.#appliedSourceWidth)) await this.#applyQuality();
+    }
     const stats = await this.stats.read(this.pc);
     if (this.#selectedMediaIp && !this.#closed && this.pc.connectionState === 'connected') {
       const route = stats.route;

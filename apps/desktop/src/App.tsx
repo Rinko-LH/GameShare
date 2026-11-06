@@ -1,7 +1,8 @@
+import { VIDEO_RESOLUTIONS, readVideoResolution, saveVideoResolution, type VideoResolution } from './video-resolution';
 import { VIDEO_BITRATE_OPTIONS, normalizeVideoBitrateLimit, readVideoBitrateLimit, saveVideoBitrateLimit } from './video-bitrate';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
-import type { PeerInfo, QualityLevel } from '@game-share/protocol';
+import type { PeerInfo } from '@game-share/protocol';
 import { DEFAULT_SIGNALING_URL, normalizeSignalingAddress, remoteAudioAudience } from '@game-share/shared';
 
 import type { TurnUiStatus } from './types/global';
@@ -17,10 +18,9 @@ import type {
 import type { LinkStats, RemoteTracks } from './rtc/types';
 import type { LinkDiagnosis } from './rtc/PeerLink';
 import { ShareSession } from './session/ShareSession';
-import { IpConnectPanel } from './IpConnectPanel';
-import { ModeChooser } from './ModeChooser';
-import { CONNECTION_MODES, mediaPolicyForMode, readConnectionMode, type ConnectionMode } from './connection-modes';
-import { parseInvitation } from './invitations';
+import { ConnectionPanel } from './ConnectionPanel';
+import { readConnectionConfig, saveConnectionConfig, type ConnectionConfig } from './connection-config';
+import { createInvitation, resolveInvitationConfig, parseInvitation } from './invitations';
 import { getLang, setLang, subscribeLang, t as lookup, fmt } from './i18n';
 import type { I18nKey } from './i18n';
 
@@ -55,13 +55,6 @@ const TUNNEL_STATE_LABEL: Record<TunnelStatus['state'], I18nKey> = {
   running: 'state.tunnel.running',
   failed: 'state.tunnel.failed',
 };
-
-/** 网格里每一路的档位 */
-const GRID_QUALITY: QualityLevel = 'GRID';
-/** 被放大那一路的档位 */
-const FOCUS_QUALITY: QualityLevel = 'FOCUS';
-/** 没被放大时其余几路的档位 */
-const BACKGROUND_QUALITY: QualityLevel = 'THUMBNAIL';
 
 type TileVariant = 'grid' | 'main' | 'thumb';
 
@@ -124,7 +117,7 @@ const AUDIO_MODE_LABEL: Partial<Record<AudioCaptureMode, I18nKey>> = {
 
 /**
  * 可选共享帧率。这是发送方本机设置（帧率是采集源的全局属性，与观看者无关），
- * 落到每条链路时还会被档位上限再压一次（THUMBNAIL 恒 30，见 quality.ts）。
+ * 发送端独立应用帧率与用户分辨率，不受观看布局影响。
  */
 const UI_FPS_OPTIONS: readonly number[] = [30, 60, 120];
 
@@ -136,25 +129,21 @@ export default function App() {
   const state = useSyncExternalStore(session.subscribe, session.getState);
   const t = useI18n();
 
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode | null>(readConnectionMode);
-  const [mixedSignaling, setMixedSignaling] = useState<'ip' | 'cloudflare'>('ip');
+  const [connectionConfig, setConnectionConfig] = useState<ConnectionConfig>(readConnectionConfig);
   const [selectedMediaIp, setSelectedMediaIp] = useState('');
   const [pendingInvitation, setPendingInvitation] = useState('');
-  const [modePickerOpen, setModePickerOpen] = useState(() => !readConnectionMode());
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [connectionRole, setConnectionRole] = useState<'host' | 'guest'>('host');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [creatingRoom, setCreatingRoom] = useState(false);
 
   const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING_URL);
-  const [selectedInviteAddress, setSelectedInviteAddress] = useState('');
+  const [selectedInviteAddress, setSelectedInviteAddress] = useState<string | null>(null);
   const [nickname, setNickname] = useState('');
   const [joinCode, setJoinCode] = useState('');
   // 加入失败要在界面上看得见：原先只写进默认收起的日志面板，
   // 满员被拒时表现成「点了加入没反应」，被当成 bug 报过（M3 待办）。
   const [joinError, setJoinError] = useState<string | null>(null);
-  // 自己的预览格纯本地显示：隐藏它不碰任何轨与协商，别人照常看到你的画面。
-  const [showSelf, setShowSelf] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const [sources, setSources] = useState<CaptureSourceInfo[]>([]);
@@ -414,6 +403,7 @@ export default function App() {
     captureLabel,
     shareFps,
     videoBitrateLimit,
+    videoResolution,
     hasAudio,
     appAudioEnabled,
     audioMode,
@@ -454,27 +444,19 @@ export default function App() {
     session.disconnect();
     setConnectionError(null);
     setConnectionRole(role);
+    setPendingInvitation('');
+    setSelectedMediaIp('');
   };
 
-  /** 隧道就绪时的公网地址 —— 异地唯一一条实测可用的路 */
+  /** 内置隧道就绪后的邀请入口；媒体策略单独配置。 */
   const tunnelUrl = tunnel?.state === 'running' ? tunnel.url : null;
 
-  /**
-   * 公网 IPv6 / IPv4 候选。
-   *
-   * **刻意不当异地首选**：本机是双层 NAT，路由器不放行入站时这条路完全不通，
-   * 实测就没通。界面上必须写明「多数家庭网络连不上」，否则用户照着填、
-   * 然后卡在「一直转圈」,而排查成本极高。真正的异地方案是隧道。
-   */
-  const publicServerUrls = embeddedServer
-    ? [...embeddedServer.publicV6Urls, ...embeddedServer.publicV4Urls]
-    : [];
-
-  /** 邀请信息里给对方填的信令地址：隧道优先，其次同一局域网 */
+  /** 本机候选只用于邀请地址选择，不能代替朋友侧的可达性验证。 */
+  const publicServerUrls = [...(embeddedServer?.publicV4Urls ?? []), ...(embeddedServer?.publicV6Urls ?? [])];
+  const directServerUrls = [...new Set([...(embeddedServer?.lanUrls ?? []), ...publicServerUrls])];
   const inviteAddress = inRoom && !/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(serverUrl) ? serverUrl
-    : (connectionMode === 'cloudflare' || (connectionMode === 'mixed' && mixedSignaling === 'cloudflare')) ? tunnelUrl
-    : selectedInviteAddress || (connectionMode === 'public' ? (publicServerUrls.length === 1 ? publicServerUrls[0] : null)
-      : embeddedServer?.lanUrls.length === 1 ? embeddedServer.lanUrls[0] : null);
+    : connectionConfig.signaling === 'cloudflare' ? tunnelUrl
+    : selectedInviteAddress ?? (connectionConfig.signaling === 'ip' && directServerUrls.length === 1 ? directServerUrls[0] : null);
   const validInviteAddress = (() => {
     if (!inviteAddress) return null;
     try { return normalizeSignalingAddress(inviteAddress); } catch { return null; }
@@ -540,32 +522,32 @@ export default function App() {
     }
   }, []);
 
-  const selectConnectionMode = async (mode: ConnectionMode) => {
-    if (inRoom || busy || connection.state === 'connecting' || CONNECTION_MODES.find(item => item.id === mode)?.unavailable) return;
-    setBusy(true);
-    try {
-      if (mode !== 'cloudflare' && tunnel?.enabled) await handleToggleTunnel(false);
-      session.disconnect();
-      setSelectedInviteAddress('');
-      setSelectedMediaIp('');
-      setPendingInvitation('');
-      session.configureMediaIp(null);
-      setServerUrl(DEFAULT_SIGNALING_URL);
-      setJoinCode('');
-      setJoinError(null);
-      setAdvancedOpen(false);
-      setSideCollapsed(false);
-      setConnectionMode(mode);
-      setConnectionRole('host');
-      setConnectionError(null);
-      setModePickerOpen(false);
-      try { localStorage.setItem('gs.connectionMode', mode); } catch { /* 本次选择仍然有效 */ }
-    } catch (err) { session.pushLog(ShareSession.describeError(err)); }
-    finally { setBusy(false); }
+  const changeConnectionConfig = (config: ConnectionConfig) => {
+    if (inRoom || busy || connection.state === 'connecting') return;
+    session.disconnect();
+    session.configureMediaIp(null);
+    if (config.signaling !== connectionConfig.signaling) {
+      setSelectedInviteAddress(null);
+      if (config.signaling !== 'cloudflare' && tunnel?.enabled) void handleToggleTunnel(false).catch(err => session.pushLog(ShareSession.describeError(err)));
+    }
+    if (config.mediaPolicy !== connectionConfig.mediaPolicy) setSelectedMediaIp('');
+    setConnectionConfig(config);
+    saveConnectionConfig(config);
+    setConnectionError(null);
+    setServerUrl(DEFAULT_SIGNALING_URL);
+  };
+
+  const readInvitationSelection = (text: string) => {
+    setPendingInvitation(text);
+    setConnectionError(null);
+    const invite = parseInvitation(text);
+    if (!invite || invite.error || !invite.server || !invite.room) return;
+    const config = resolveInvitationConfig(invite, connectionConfig);
+    if (config.signaling !== connectionConfig.signaling || config.mediaPolicy !== connectionConfig.mediaPolicy) changeConnectionConfig(config);
   };
 
   useEffect(() => {
-    if (connectionMode !== 'mixed' || !inRoom || !selectedMediaIp) return;
+    if (connectionConfig.mediaPolicy !== 'selected-ip-experimental' || !inRoom || !selectedMediaIp) return;
     let alive = true;
     const tick = async () => {
       try {
@@ -578,7 +560,7 @@ export default function App() {
     void tick();
     const timer = setInterval(() => void tick(), 2000);
     return () => { alive = false; clearInterval(timer); };
-  }, [connectionMode, inRoom, selectedMediaIp, session]);
+  }, [connectionConfig.mediaPolicy, inRoom, selectedMediaIp, session]);
 
   /* ---------------- 浮窗模式 ---------------- */
 
@@ -689,54 +671,44 @@ export default function App() {
 
   const copyInvite = useCallback(async (): Promise<void> => {
     if (!room || !validInviteAddress) return;
-    // 邀请码：GS1.<base64({server, room})>，机器可读的一整行 —— 对方粘贴进
-    // 房间码框就能自动填地址 + 自动连接 + 自动加入，不用再对着两个字段手抄。
-    // 地址与房间码都是 ASCII，btoa 安全；前缀 GS1. 便于在任意文本里定位。
-    const code = `${connectionMode === 'mixed' ? 'GS2' : 'GS1'}.${btoa(JSON.stringify({ server: validInviteAddress, room: room.roomCode, mode: connectionMode ?? 'lan', mediaPolicy: mediaPolicyForMode(connectionMode ?? 'lan'), ...(connectionMode === 'mixed' ? { signaling: mixedSignaling } : {}) }))}`;
+    const code = createInvitation(validInviteAddress, room.roomCode, connectionConfig);
     const text = [
-      '一起玩 GameShare！复制下面的邀请链接，粘贴到“我要加入”的输入框，再点“连接并加入”：',
+      '一起玩 GameShare！选择“加入房间”，粘贴下面的完整邀请。信令和音视频配置会自动读取；如需媒体 IP，请选择你自己电脑的地址，再点“连接并加入”：',
       code,
     ].join('\n');
     if (await writeClipboard(text)) {
-      session.pushLog('邀请链接已复制，发给朋友后，让对方粘贴到“我要加入”的输入框，再点“连接并加入”');
+      session.pushLog('邀请已复制：朋友选择“加入房间”并粘贴，配置自动读取，必要时再选择自己的媒体 IP');
       flashCopied('invite');
     } else {
       session.pushLog('复制失败，请手动记录信令地址和房间码');
     }
-  }, [room, validInviteAddress, connectionMode, mixedSignaling, session, writeClipboard, flashCopied]);
+  }, [room, validInviteAddress, connectionConfig, session, writeClipboard, flashCopied]);
 
   // All invitation entry points share policy validation before opening any connection.
   const joinModeInvitation = useCallback(async (text: string) => {
     if (inRoom) throw new Error('请先离开当前房间，再加入邀请。');
     const invite = parseInvitation(text);
     if (invite?.error) throw new Error(invite.error);
-    if (!invite?.server || !invite.room) throw new Error('未识别到邀请链接，请粘贴完整的 GS1. 开头的链接。');
-    if (invite.mode === 'mixed') {
-      setConnectionMode('mixed');
-      setConnectionRole('guest');
-      setMixedSignaling(invite.signaling ?? 'ip');
-      setPendingInvitation(text);
-      setModePickerOpen(false);
-      if (!selectedMediaIp) throw new Error('已识别混合模式邀请，请先选择你自己电脑上的媒体 IP，再点击加入。');
-    }
+    if (!invite?.server || !invite.room) throw new Error('未识别到完整邀请，请粘贴整段 GS3 / GS1 / GS2 邀请。');
+    const config = resolveInvitationConfig(invite, connectionConfig);
     const target = normalizeSignalingAddress(invite.server);
-    const mode = invite.mode ?? (invite.mediaPolicy === 'local-auto' ? 'lan' : invite.mediaPolicy === 'internet-auto' ? 'public' : connectionMode ?? 'lan');
-    if (!invite.mode && !invite.mediaPolicy) session.pushLog('旧邀请未携带连接模式，将使用当前选择的模式；连接失败时请与房主确认。');
-    setConnectionMode(mode);
+    setPendingInvitation(text);
     setConnectionRole('guest');
-    setModePickerOpen(false);
-    try { localStorage.setItem('gs.connectionMode', mode); } catch { /* 本次选择仍然有效 */ }
+    setConnectionConfig(config);
+    saveConnectionConfig(config);
     setServerUrl(target);
     setJoinError(null);
     setConnectionError(null);
-    if (mode === 'mixed') {
+    if (!invite.config && !invite.mode && !invite.mediaPolicy) session.pushLog('旧邀请未携带连接策略，将沿用当前配置，请确认与房主一致。');
+    const selected = config.mediaPolicy === 'selected-ip-experimental';
+    if (selected) {
       const status = await window.gameShare?.server.getStatus();
-      if (!status?.mediaAddresses.some(item => item.address === selectedMediaIp)) throw new Error('所选媒体 IP 不可用，请刷新并重新选择。');
+      if (!selectedMediaIp || !status?.mediaAddresses.some(item => item.address === selectedMediaIp)) throw new Error('请先选择你自己电脑上有效的媒体 IP，再点击加入。');
     }
-    session.configureMediaIp(mode === 'mixed' ? selectedMediaIp : null);
-    await session.connectAndWait(target, mode === 'mixed' || mediaPolicyForMode(mode) === 'local-auto');
+    session.configureMediaIp(selected ? selectedMediaIp : null);
+    await session.connectAndWait(target, config.mediaPolicy !== 'internet-auto');
     await session.joinRoom(invite.room, nickname);
-  }, [inRoom, connectionMode, session, nickname, selectedMediaIp]);
+  }, [inRoom, connectionConfig, session, nickname, selectedMediaIp]);
 
   const handleJoinInputChange = useCallback((raw: string) => {
     const invite = parseInvitation(raw);
@@ -789,15 +761,15 @@ export default function App() {
       return;
     }
     try {
-      if (connectionMode === 'mixed' && !selectedMediaIp) throw new Error('请先选择本机媒体 IP。');
-      session.configureMediaIp(connectionMode === 'mixed' ? selectedMediaIp : null);
-      session.connect(serverUrl.trim() || DEFAULT_SIGNALING_URL, connectionMode === 'lan' || connectionMode === 'mixed');
+      if (connectionConfig.mediaPolicy === 'selected-ip-experimental' && !selectedMediaIp) throw new Error('请先选择本机媒体 IP。');
+      session.configureMediaIp(connectionConfig.mediaPolicy === 'selected-ip-experimental' ? selectedMediaIp : null);
+      session.connect(serverUrl.trim() || DEFAULT_SIGNALING_URL, connectionConfig.mediaPolicy !== 'internet-auto');
       setServerUrl(session.serverUrl);
     } catch (err) {
       setJoinError(ShareSession.describeError(err));
       session.pushLog(ShareSession.describeError(err));
     }
-  }, [connected, connection.state, serverUrl, session, connectionMode, selectedMediaIp]);
+  }, [connected, connection.state, serverUrl, session, connectionConfig.mediaPolicy, selectedMediaIp]);
 
   const run = useCallback(
     async (fn: () => Promise<unknown>): Promise<void> => {
@@ -923,6 +895,12 @@ export default function App() {
 
   /* ---- 共享帧率 ---- */
 
+  useEffect(() => { session.setVideoResolution(readVideoResolution()); }, [session]);
+  const changeVideoResolution = useCallback((height: VideoResolution) => {
+    session.setVideoResolution(height);
+    saveVideoResolution(height);
+  }, [session]);
+
   useEffect(() => { session.setVideoBitrateLimit(readVideoBitrateLimit()); }, [session]);
   const changeVideoBitrateLimit = useCallback((raw: string) => {
     const limit = normalizeVideoBitrateLimit(raw);
@@ -960,7 +938,7 @@ export default function App() {
   const members: PeerInfo[] = room ? [room.self, ...room.peers] : [];
   const remotePeers = useMemo(() => (room ? room.peers : []), [room]);
   // 按实际渲染的画面数量排网格；不足一行的格子留空。
-  const gridTileCount = remotePeers.length + (sharing && showSelf ? 1 : 0);
+  const gridTileCount = remotePeers.length + (sharing ? 1 : 0);
   const gridColumns = Math.max(1, Math.ceil(Math.sqrt(gridTileCount)));
   const gridRows = Math.max(1, Math.ceil(gridTileCount / gridColumns));
 
@@ -1025,31 +1003,17 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [focusedPeerId, stageFullscreen]);
 
-  /**
-   * 放大的画质联动。
-   *
-   * 源端对每一路观看者独立编码，所以「我放大谁」只影响「他 → 我」这一条链路，
-   * 别人看到的档位不受影响。之所以顺手把其余几路降到 THUMBNAIL：
-   * 四人场景下三路 540p 已经吃掉大半上行，不降档的话放大这一路也拿不到 1080p。
-   * 还原时统一回 GRID。浮窗模式始终请求 THUMBNAIL，不随焦点或窗口大小提升档位。
-   *
-   * 请求是幂等的，所以成员变化时整轮重发一次，顺便把新加入的人带上正确档位。
-   */
-  useEffect(() => {
-    if (!inRoom) return;
-    for (const peer of remotePeers) {
-      const level =
-        isFloat ? BACKGROUND_QUALITY :
-        focusedPeerId === null
-          ? GRID_QUALITY
-          : peer.peerId === focusedPeerId
-            ? FOCUS_QUALITY
-            : BACKGROUND_QUALITY;
-      session.requestQualityFrom(peer.peerId, level);
-    }
-  }, [isFloat, focusedPeerId, inRoom, session, remotePeers]);
-
   /* ---------------- 渲染 ---------------- */
+
+  const resolutionControl = <div className="resolution-control">
+    <span className="hint hint--dim">{t('share.resolutionLabel')}</span>
+    <div className="resolution-options" role="radiogroup" aria-label={t('share.resolutionLabel')}>
+      {VIDEO_RESOLUTIONS.map(height => <button key={height} type="button" role="radio" aria-checked={videoResolution === height} data-video-resolution={height} className={videoResolution === height ? 'btn btn--mode btn--mode-on' : 'btn btn--mode'} onClick={() => changeVideoResolution(height)}>
+        {t(height === 360 ? 'share.resolutionLow' : height === 540 ? 'share.resolutionMedium' : 'share.resolutionHigh')} {height}p
+      </button>)}
+    </div>
+    <p className="hint hint--dim">{t('share.resolutionHint')}</p>
+  </div>;
 
   const bitrateControl = <label className="ip-connect__field">
     <span className="hint">{t('share.bitrateLabel')}</span>
@@ -1160,7 +1124,7 @@ export default function App() {
       diagnosis={links[peer.peerId]?.diagnosis}
       stats={stats[peer.peerId] ?? null}
       remoteSharing={Boolean(remoteSharing[peer.peerId])}
-      localMediaExpected={sharing || micEnabled || connectionMode === 'mixed'}
+      localMediaExpected={sharing || micEnabled}
       /**
        * 远端三条轨按角色传下去。
        *
@@ -1520,9 +1484,7 @@ export default function App() {
         </div>
 
         <div className="app__header-right">
-          <button className="btn btn--tiny" type="button" disabled={inRoom || busy || connection.state === 'connecting'} onClick={() => setModePickerOpen(true)} title={inRoom ? '请先离开房间再切换模式' : '选择连接方式'}>
-            {CONNECTION_MODES.find((mode) => mode.id === connectionMode)?.name ?? '选择连接方式'} · 切换
-          </button>
+          <button className="btn btn--tiny" type="button" onClick={() => { setSideCollapsed(false); setSidePage('room'); }}>房间连接</button>
           {/* 中英切换：只切界面文案，房间/共享等功能不受影响 */}
           <button
             type="button"
@@ -1606,7 +1568,7 @@ export default function App() {
         </div>
       </header>
 
-      {modePickerOpen ? <ModeChooser onSelect={(mode) => void selectConnectionMode(mode)} onCancel={connectionMode ? () => setModePickerOpen(false) : undefined} /> : <main
+      <main
         className="app__body"
         style={
           // 常规模式：三列（侧栏宽可拖拽调、收起时切两列）。
@@ -1624,6 +1586,12 @@ export default function App() {
                 {copied === 'invite' ? t('room.copied') : t('room.copyInvite')}
               </button>}
             </div>
+            {inRoom && connectionRole === 'host' && !validInviteAddress && <div className="sidebar-warning" aria-live="polite">
+              <span>{connectionConfig.signaling === 'cloudflare'
+                ? tunnel?.state === 'failed' || tunnel?.state === 'stopped' ? '邀请网址未就绪，请到房间连接重试。' : '正在准备邀请网址…就绪后才能复制，可先选择共享画面。'
+                : '邀请地址未就绪，请查看房间连接。'}</span>
+              {sidePage !== 'room' && <button type="button" className="btn btn--tiny" onClick={() => setSidePage('room')}>{t('sidebar.viewRoom')}</button>}
+            </div>}
             <div className="sidebar-tabs" role="tablist" aria-label={t('sidebar.controls')}>
               {(['room', 'share'] as const).map((page) => <button key={page} id={`sidebar-tab-${page}`} type="button" role="tab" tabIndex={sidePage === page ? 0 : -1} aria-selected={sidePage === page} aria-controls={`sidebar-page-${page}`} className={`btn${sidePage === page ? ' btn--primary' : ' btn--ghost'}`} onClick={() => setSidePage(page)} onKeyDown={(event) => {
                 if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -1653,9 +1621,9 @@ export default function App() {
           {!inRoom && <label className="panel panel--tight ip-connect__field"><span className="hint">你的昵称（可不填）</span>
             <input className="field__input field__input--compact" value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={16} disabled={busy} placeholder="朋友会看到的名字" />
           </label>}
-          {connectionMode && <IpConnectPanel key={connectionMode} mode={connectionMode} mixedSignaling={mixedSignaling} onMixedSignaling={(value) => { setMixedSignaling(value); setSelectedInviteAddress(''); }} mediaIp={selectedMediaIp} onMediaIp={setSelectedMediaIp} initialInvitation={pendingInvitation} role={connectionRole} onRoleChange={changeConnectionRole} onConnectionError={setConnectionError} onCreatingRoom={setCreatingRoom} session={session} nickname={nickname} disabled={inRoom || connection.state === 'connecting'}
+          <ConnectionPanel config={connectionConfig} onConfig={changeConnectionConfig} mediaIp={selectedMediaIp} onMediaIp={setSelectedMediaIp} initialInvitation={pendingInvitation} onInvitation={readInvitationSelection} role={connectionRole} onRoleChange={changeConnectionRole} connectionError={connectionError} onConnectionError={setConnectionError} onCreatingRoom={setCreatingRoom} session={session} nickname={nickname} disabled={inRoom || connection.state === 'connecting'}
             joined={inRoom} busy={busy} server={embeddedServer} tunnel={tunnel} inviteAddress={inviteAddress}
-            onInviteAddress={setSelectedInviteAddress} onServerUrl={setServerUrl} onBusy={setBusy} onServer={setEmbeddedServer} onTunnel={setTunnel} onJoinInvitation={joinModeInvitation} />}
+            onInviteAddress={setSelectedInviteAddress} onServerUrl={setServerUrl} onBusy={setBusy} onServer={setEmbeddedServer} onTunnel={setTunnel} onJoinInvitation={joinModeInvitation} />
           <button className="btn btn--tiny" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>{advancedOpen ? '收起高级设置' : '高级设置（网络与中继）'}</button>
           {advancedOpen && <>
           {/* ---- 连接：地址和昵称各一行输入框，其余信息全部让位 ---- */}
@@ -2183,7 +2151,7 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="row">
+                <div className="row share-actions">
                   <button
                     type="button"
                     className="btn btn--danger"
@@ -2201,27 +2169,6 @@ export default function App() {
                     disabled={busy}
                   >
                     {pickerOpen ? t('share.pickHide') : t('share.pickMore')}
-                  </button>
-                  {/* 暂停/恢复发送应用声音：只切这一条轨（replaceTrack(null)），画面不受影响、
-                      也不重新采集。想换「采哪一种声音」用下面的模式选择。 */}
-                  <button
-                    type="button"
-                    className="btn btn--ghost"
-                    onClick={() => session.setAppAudioEnabled(!appAudioEnabled)}
-                    disabled={!hasAudio || busy}
-                    title={hasAudio ? t('share.toggleAppAudioTitleOk') : t('share.toggleAppAudioTitleNo')}
-                  >
-                    {appAudioEnabled ? t('share.toggleAppAudioOff') : t('share.toggleAppAudioOn')}
-                  </button>
-                  {/* 隐藏的是本机预览格：不碰轨、不碰协商，共享照常发。
-                      「是否显示自己」是 M4 布局项里最后补的一块。 */}
-                  <button
-                    type="button"
-                    className="btn btn--ghost"
-                    onClick={() => setShowSelf((v) => !v)}
-                    title={t('share.hideSelfTitle')}
-                  >
-                    {showSelf ? t('share.hideSelf') : t('share.showSelf')}
                   </button>
                 </div>
 
@@ -2262,6 +2209,7 @@ export default function App() {
                   ))}
                 </div>
                 <p className="hint hint--dim">{t('share.fpsHint')}</p>
+                {resolutionControl}
                 {bitrateControl}
 
                 {pickerOpen && sourceError && <p className="hint hint--warn">{sourceError}</p>}
@@ -2306,6 +2254,7 @@ export default function App() {
                   ))}
                 </div>
 
+                {resolutionControl}
                 {bitrateControl}
                 <div className="row">
                   <button
@@ -2416,8 +2365,8 @@ export default function App() {
           {!inRoom ? (
             <div className="stage__empty">
               <h2>和朋友一起看，一起玩</h2>
-              <p>① 选择连接方式 → ② 创建或加入房间 → ③ 选择屏幕开始共享</p>
-              <p className="hint hint--dim">从左侧开始。加入房间后，朋友共享的画面会显示在这里。</p>
+              <p>① 在“房间连接”创建或加入 → ② 到“屏幕共享”选择屏幕或窗口</p>
+              <p className="hint hint--dim">有朋友的邀请？选择“加入房间”并粘贴，信令与音视频配置会自动读取。</p>
             </div>
           ) : focusedPeerId ? (
             <div className="stage stage--focused">
@@ -2425,7 +2374,7 @@ export default function App() {
                 {remotePeers.filter((p) => p.peerId === focusedPeerId).map((p) => renderRemoteTile(p, 'main'))}
               </div>
               <div className="stage__strip">
-                {sharing && showSelf && renderSelfTile('thumb')}
+                {sharing && renderSelfTile('thumb')}
                 {remotePeers
                   .filter((p) => p.peerId !== focusedPeerId)
                   .map((p) => renderRemoteTile(p, 'thumb'))}
@@ -2436,12 +2385,12 @@ export default function App() {
               gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
               gridTemplateRows: `repeat(${gridRows}, minmax(0, 1fr))`,
             }}>
-              {sharing && showSelf && renderSelfTile('grid')}
+              {sharing && renderSelfTile('grid')}
               {remotePeers.map((peer) => renderRemoteTile(peer, 'grid'))}
             </div>
           )}
         </div>
-      </main>}
+      </main>
     </div>
   );
 }

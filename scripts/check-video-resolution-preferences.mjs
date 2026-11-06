@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { build } from 'esbuild';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const root = path.resolve(import.meta.dirname, '..');
+const output = path.join(root, '.cache/video-resolution/preferences.mjs');
+fs.mkdirSync(path.dirname(output), { recursive: true });
+await build({ entryPoints: [path.join(root, 'apps/desktop/src/video-resolution.ts')], bundle: true, platform: 'node', format: 'esm', outfile: output });
+const prefs = await import(pathToFileURL(output));
+const storage = new Map();
+globalThis.window = { localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) } };
+assert.equal(prefs.readVideoResolution(), 540);
+assert.deepEqual(prefs.VIDEO_RESOLUTIONS, [360, 540, 1080]);
+for (const height of prefs.VIDEO_RESOLUTIONS) { prefs.saveVideoResolution(height); assert.equal(prefs.readVideoResolution(), height); }
+for (const value of [null, true, {}, '', '0', '-1', 'NaN', 'Infinity', '720', '2160', 'garbage']) assert.equal(prefs.normalizeVideoResolution(value), 540);
+storage.set(prefs.VIDEO_RESOLUTION_STORAGE_KEY, '720'); assert.equal(prefs.readVideoResolution(), 540);
+Object.defineProperty(globalThis.window, 'localStorage', { get() { throw new Error('Storage disabled'); } });
+assert.equal(prefs.readVideoResolution(), 540);
+assert.doesNotThrow(() => prefs.saveVideoResolution(1080));
+delete globalThis.window;
+console.log('PASS: 540p default, three resolution preferences, persistence, invalid values and unavailable storage');

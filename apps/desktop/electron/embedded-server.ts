@@ -7,6 +7,7 @@ import {
   type SignalingServerHandle,
 } from '@game-share/signaling';
 import { DEFAULT_SIGNALING_PORT, createLogger } from '@game-share/shared';
+import { resolveSignalingOrigin } from './signaling-origin';
 
 /**
  * 客户端内置的信令服务器。
@@ -95,6 +96,7 @@ export class EmbeddedSignalingServer {
   #handle: SignalingServerHandle | null = null;
   #status: EmbeddedServerStatus;
   #dualStack = false;
+  #reusedOrigin: string | null = null;
   #onChange: (status: EmbeddedServerStatus) => void = () => {};
   #unsubscribeTurn: (() => void) | null = null;
 
@@ -116,6 +118,7 @@ export class EmbeddedSignalingServer {
 
   async start(): Promise<EmbeddedServerStatus> {
     if (this.#status.state === 'running') return this.#status;
+    this.#reusedOrigin = null;
 
     const log = createLogger('signaling');
 
@@ -162,11 +165,12 @@ export class EmbeddedSignalingServer {
       const code = (err as NodeJS.ErrnoException).code;
       const message = err instanceof Error ? err.message : String(err);
       if (code === 'EADDRINUSE') {
-        return this.#publish(
-          'port-in-use',
-          this.#port,
-          `端口 ${this.#port} 已被占用，本机应该已有一个信令服务器在跑`,
-        );
+        try {
+          this.#reusedOrigin = await resolveSignalingOrigin(this.#port);
+          return this.#publish('port-in-use', this.#port, `已确认本机端口 ${this.#port} 上有 GameShare 信令服务，将复用该服务。`);
+        } catch {
+          return this.#publish('failed', this.#port, `端口 ${this.#port} 被其他程序占用，未找到可用的 GameShare 信令服务。请检查端口占用后重试；不要将该端口直接作为穿透目标。`);
+        }
       }
       return this.#publish('failed', this.#port, message);
     }
@@ -251,7 +255,7 @@ export class EmbeddedSignalingServer {
       state,
       port,
       dualStack: this.#dualStack,
-      localUrl: this.#dualStack ? `http://[::1]:${port}` : `http://127.0.0.1:${port}`,
+      localUrl: this.#reusedOrigin ?? (this.#dualStack ? `http://[::1]:${port}` : `http://127.0.0.1:${port}`),
       lanUrls: addresses.lan.map((item) => item.url),
       mediaAddresses: Object.entries(os.networkInterfaces()).flatMap(([interfaceName, entries]) =>
         (entries ?? []).filter(entry => !entry.internal).map(entry => ({ interfaceName, address: entry.address, family: entry.family }))),

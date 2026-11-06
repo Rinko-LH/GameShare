@@ -1,6 +1,6 @@
 import { normalizeVideoBitrateLimit } from '../video-bitrate';
+import { DEFAULT_VIDEO_RESOLUTION, normalizeVideoResolution, qualityForResolution, type VideoResolution } from '../video-resolution';
 import {
-  DEFAULT_QUALITY,
   type PeerInfo,
   type QualityLevel,
   type TrackRole,
@@ -117,6 +117,7 @@ export interface SessionState {
   /** 共享帧率偏好（30/60/120）。编码端 maxFramerate 与采集端共同的上限来源 */
   shareFps: number;
   videoBitrateLimit: number | null;
+  videoResolution: VideoResolution;
   /** 本机这次共享是否真的带上了系统声音（采集降级时为 false） */
   hasAudio: boolean;
   /** 应用声音这一条轨当前是否在往外发（关掉后画面照常推） */
@@ -188,6 +189,7 @@ const INITIAL_STATE: SessionState = {
   captureLabel: null,
   shareFps: 30,
   videoBitrateLimit: null,
+  videoResolution: DEFAULT_VIDEO_RESOLUTION,
   hasAudio: false,
   appAudioEnabled: false,
   audioMode: null,
@@ -452,9 +454,7 @@ export class ShareSession {
       const timer = setTimeout(() => {
         unsubscribe();
         this.disconnect();
-        reject(new Error(lanOnly
-          ? `连接 ${target} 超时：请确认双方在同一个 UU 房间或局域网、房主已创建房间，并允许 GameShare 通过防火墙`
-          : `连接 ${target} 超时：请确认房主已创建房间、邀请地址仍有效；公网直连还需检查端口映射和防火墙`));
+        reject(new Error(`连接房间地址 ${target} 超时：请确认房主信令服务运行、邀请地址有效及防火墙允许；IP 地址需双方网络互通，外网入口需检查映射或隧道。此错误属于信令连接，与音视频策略分开检查。`));
       }, 12_000);
       const unsubscribe = this.signaling.on('state', (state) => {
         if (state !== 'connected') return;
@@ -555,6 +555,7 @@ export class ShareSession {
       this.#mesh = new MeshManager({
         signaling: this.signaling,
         videoBitrateLimit: this.#state.videoBitrateLimit,
+        videoResolution: this.#state.videoResolution,
         // UU/LAN uses reachable local and virtual adapter candidates, avoiding public STUN/TURN routes.
         selectedMediaIp: this.#selectedMediaIp,
         iceServers: this.#lanOnly || this.#selectedMediaIp ? [] : buildIceServers({ turn: turn ? shareTurn(turn) : undefined }),
@@ -880,7 +881,7 @@ export class ShareSession {
     this.#mesh?.setLocalTrack('video', track);
     this.#mesh?.setLocalTrack('appAudio', appAudio);
     if (!wasSharing) {
-      this.signaling.setSharing(true, DEFAULT_QUALITY);
+      this.signaling.setSharing(true, qualityForResolution(this.#state.videoResolution));
     }
     const failure = this.capture.audioFailure;
     this.#patch({
@@ -933,18 +934,28 @@ export class ShareSession {
     this.pushLog(`已停止共享（${reason}）`);
   }
 
-  /** 只调整「自己 → 指定观看者」这一条链路，其他人不受影响 */
-  setQualityFor(peerId: string, level: QualityLevel): void {
+  /** 兼容旧客户端请求，只回报本机统一选择的发送档位。 */
+  setQualityFor(peerId: string, _requestedLevel: QualityLevel): void {
+    const level = qualityForResolution(this.#state.videoResolution);
     const ok = this.#mesh?.setQualityFor(peerId, level) ?? false;
     if (ok) {
       this.signaling.notifyQualityChanged(peerId, level);
-      this.pushLog(`已为观看者 ${peerId} 调整画质 → ${level}`);
     }
   }
 
   /** 作为观看者，向某位发送方请求画质 */
   requestQualityFrom(peerId: string, level: QualityLevel): void {
     this.signaling.requestQuality(peerId, level);
+  }
+
+  /** Apply the sender's resolution to every outgoing viewer link. */
+  setVideoResolution(value: VideoResolution): void {
+    const height = normalizeVideoResolution(value);
+    if (this.#state.videoResolution === height) return;
+    this.#patch({ videoResolution: height });
+    this.#mesh?.setVideoResolution(height);
+    if (this.#state.sharing) this.signaling.setSharing(true, qualityForResolution(height));
+    this.pushLog(`发送分辨率 → ${height}p（手动，所有观看者）`);
   }
 
   /** Set the local video encoder cap for each outgoing viewer link. */

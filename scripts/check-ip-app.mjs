@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
-import http from 'node:http';
 import path from 'node:path';
 import { io } from 'socket.io-client';
 import { createRequire } from 'node:module';
@@ -26,18 +25,6 @@ let logs = '';
 child.stdout.on('data', (chunk) => { logs += chunk; });
 child.stderr.on('data', (chunk) => { logs += chunk; });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-function health() {
-  return new Promise((resolve, reject) => {
-    const req = http.get('http://[::1]:8080/health', (res) => {
-      let body = '';
-      res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); } catch { reject(new Error(`Health response ${res.statusCode}: ${body}`)); }
-      });
-    });
-    req.on('error', reject);
-  });
-}
 async function until(check, message) {
   const end = Date.now() + 20_000;
   while (Date.now() < end) {
@@ -80,242 +67,153 @@ try {
     if (response.exceptionDetails) throw new Error(JSON.stringify(response.exceptionDetails));
     return response.result.value;
   }
-  await until(() => evaluate('Boolean(document.querySelector(".mode-chooser, .ip-connect"))'), 'Connection UI is missing');
-  await evaluate('localStorage.removeItem("gs.connectionMode"); localStorage.removeItem("gs.videoBitrateLimit"); location.reload(); true');
-  await until(() => evaluate('Boolean(document.querySelector(".mode-chooser"))'), 'First launch mode chooser missing');
-  assert.equal(await evaluate('document.querySelectorAll(".mode-card").length'), 4);
-  fs.writeFileSync(path.join(output, 'mode-chooser.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
-  async function selectMode(index) {
-    await evaluate(`document.querySelectorAll('.mode-card')[${index}].click()`);
-    await until(() => evaluate('Boolean(document.querySelector(".ip-connect"))'), 'Mode selection did not open connection panel');
+  await command('Page.enable');
+  await command('Page.addScriptToEvaluateOnNewDocument', { source: `window.__testPCs = []; const BasePC = window.RTCPeerConnection; window.RTCPeerConnection = class extends BasePC { constructor(config) { super(config); window.__testPCs.push(this); } };` });
+  await evaluate('localStorage.removeItem("gs.connectionConfig"); localStorage.removeItem("gs.connectionMode"); localStorage.removeItem("gs.videoBitrateLimit"); localStorage.removeItem("gs.videoResolution"); location.reload(); true');
+  await until(() => evaluate('Array.isArray(window.__testPCs) && Boolean(document.querySelector(".connection-panel"))'), 'Unified connection page missing');
+  assert.equal(await evaluate('Boolean(document.querySelector(".mode-chooser, .mode-card"))'), false);
+  assert.equal(await evaluate('document.querySelector("[data-signaling]").options.length'), 3);
+  assert.equal(await evaluate('document.querySelector("[data-media-policy]").options.length'), 3);
+  assert.equal(await evaluate('document.querySelector("[data-signaling]").value'), 'cloudflare');
+  assert.equal(await evaluate('document.querySelector("[data-media-policy]").value'), 'internet-auto');
+  fs.writeFileSync(path.join(output, 'unified-host.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
+  async function fill(selector, value) {
+    await evaluate(`(() => { const input = document.querySelector(${JSON.stringify(selector)}); const proto = input.tagName === 'SELECT' ? HTMLSelectElement.prototype : input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(input, ${JSON.stringify(value)}); input.dispatchEvent(new Event(input.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); })()`);
   }
-  async function openModes() {
-    await until(() => evaluate('!Array.from(document.querySelectorAll("button")).find(b => b.innerText.includes("· 切换"))?.disabled'), 'Mode switch remained disabled');
-    await evaluate('Array.from(document.querySelectorAll("button")).find(b => b.innerText.includes("· 切换")).click()');
-    await until(() => evaluate('Boolean(document.querySelector(".mode-chooser"))'), 'Mode switch did not open');
+  async function role(value) {
+    await evaluate(`document.querySelector('input[name="connection-role"][value="${value}"]').click()`);
   }
-  assert.equal(await evaluate('document.querySelectorAll(".mode-card")[3].disabled'), false, 'Experimental mode must be testable');
-  await selectMode(3);
-  assert.equal(await evaluate('document.querySelector("#sidebar-tab-room").getAttribute("aria-selected")'), 'true');
-  await evaluate('document.querySelector("#sidebar-tab-share").click()');
-  assert.equal(await evaluate('document.querySelector("#sidebar-page-room").hidden'), true);
-  assert.equal(await evaluate('document.querySelector("#sidebar-page-share").hidden'), false);
-  await evaluate('document.querySelector("#sidebar-tab-room").click()');
-  if (process.argv.includes('--sidebar-only')) {
-    await openModes(); await selectMode(0);
-    host = io('http://[::1]:8080', { reconnection: false });
-    await new Promise((resolve, reject) => { host.once('connect', resolve); host.once('connect_error', reject); });
-    const result = await new Promise((resolve, reject) => host.timeout(3000).emit('create-room', { nickname: 'Sidebar test host' }, (err, result) => err ? reject(err) : resolve(result)));
-    assert.equal(result.ok, true);
-    await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
-    const invite = `GS1.${Buffer.from(JSON.stringify({ server: 'http://[::1]:8080', room: result.data.roomCode, mode: 'lan', mediaPolicy: 'local-auto' })).toString('base64')}`;
-    await evaluate(`(() => { const input = document.querySelector('.ip-connect textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(invite)}); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
-    await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'Invitation not ready');
-    await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
-    await until(() => evaluate('document.querySelector("#sidebar-tab-share").getAttribute("aria-selected") === "true"'), 'Joining should open sharing');
-    assert.equal(await evaluate('document.querySelector(".roomcode__value").textContent'), result.data.roomCode);
-    await evaluate('document.querySelector("[data-video-bitrate]").value = "1000000"; document.querySelector("[data-video-bitrate]").dispatchEvent(new Event("change", {bubbles:true}))');
-    await evaluate('Array.from(document.querySelectorAll("#sidebar-page-share button")).find(b => b.title.includes("测试") || b.title.includes("test")).click()');
-    await until(() => evaluate('Boolean(document.querySelector(".tag--live"))'), 'Test sharing did not start');
+  async function submit() { await evaluate('document.querySelector(".connection-config-form").requestSubmit()'); }
+  async function leave() {
     await evaluate('document.querySelector("#sidebar-tab-room").click()');
-    await sleep(250);
-    fs.writeFileSync(path.join(output, 'sidebar-room.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
-    await evaluate('document.querySelector("#sidebar-tab-share").click()');
-    assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").value'), '1000000');
-    assert.equal(await evaluate('Boolean(document.querySelector("#sidebar-page-share .tag--live"))'), true, 'Changing tabs must preserve screen sharing');
-    assert.equal(await evaluate('Boolean(document.querySelector(".sidebar-header button[title]"))'), true);
-    await sleep(250);
-    fs.writeFileSync(path.join(output, 'sidebar-sharing.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
-    await evaluate('document.querySelector("#sidebar-tab-share").dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowLeft", bubbles:true}))');
-    assert.equal(await evaluate('document.activeElement.id'), 'sidebar-tab-room');
     await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.textContent.trim())).click()');
-    await until(() => evaluate('document.querySelector("#sidebar-tab-room").getAttribute("aria-selected") === "true" && !document.querySelector(".roomcode__value")'), 'Leaving should restore connection page');
-    console.log('PASS: sidebar pages, automatic join navigation, live sharing and bitrate preserved across tabs, persistent invite, keyboard navigation, leaving room');
-    await evaluate('setTimeout(() => window.gameShare.windowControl.close(), 100); true');
-  } else {
-  assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /实验模式/);
-  assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").value'), '', 'Default bitrate is automatic');
-  assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").options.length'), 8);
-  await evaluate(`(() => { const select = document.querySelector('[data-video-bitrate]'); select.value = '1000000'; select.dispatchEvent(new Event('change', {bubbles:true})); })()`);
-  await until(() => evaluate('localStorage.getItem("gs.videoBitrateLimit") === "1000000"'), 'Bitrate preference was not stored');
-  await evaluate('location.reload(); true');
-  await until(() => evaluate('document.querySelector("[data-video-bitrate]")?.value === "1000000"'), 'Bitrate preference was not restored');
-  await evaluate('localStorage.setItem("gs.videoBitrateLimit", "not-a-limit"); location.reload(); true');
-  await until(() => evaluate('document.querySelector("[data-video-bitrate]")?.value === ""'), 'Invalid bitrate preference must fall back to automatic');
-  await evaluate(`(() => { const select = document.querySelector('[data-video-bitrate]'); select.value = '2000000'; select.dispatchEvent(new Event('change', {bubbles:true})); })()`);
-  await until(() => evaluate('localStorage.getItem("gs.videoBitrateLimit") === "2000000"'), 'Changed bitrate preference was not stored');
-  await evaluate(`(() => { const select = document.querySelector('[data-video-bitrate]'); select.value = ''; select.dispatchEvent(new Event('change', {bubbles:true})); })()`);
-  await until(() => evaluate('localStorage.getItem("gs.videoBitrateLimit") === null'), 'Automatic should clear manual preference');
-  console.log('PASS: bitrate presets, selection, reload persistence, invalid preference and restoring automatic');
-
-  assert.equal(await evaluate('Boolean(document.querySelector(".diagnostics-panel"))'), false, 'Diagnostic recording UI must be removed');
-  assert.equal(await evaluate('Boolean(window.gameShare.diagnostics)'), false, 'Diagnostic export API must be removed');
-  assert.equal(await evaluate('document.querySelector(".media-ip-select").value'), '', 'Do not choose a media IP for the user');
-  assert.equal(await evaluate('Array.from(document.querySelectorAll(".ip-connect button")).find(b => b.innerText === "创建房间").disabled'), true, 'Require a media IP');
-  await evaluate('document.querySelector("input[name=mixed-signaling][value=cloudflare]").click()');
-  assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /自动准备临时房间入口/);
-  await evaluate('document.querySelector("input[name=mixed-signaling][value=ip]").click()');
-  const mixedStatus = await evaluate('window.gameShare.server.getStatus()');
-  assert.ok(mixedStatus.mediaAddresses.length > 0, 'No adapter addresses exposed to renderer');
-  assert.ok(mixedStatus.mediaAddresses.every(item => item.interfaceName && item.address !== '127.0.0.1' && item.address !== '::1'));
-  await evaluate(`(() => { const select = document.querySelector('.media-ip-select'); select.value = ${JSON.stringify(mixedStatus.mediaAddresses[0].address)}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  await evaluate(`(() => { const select = document.querySelector('.ip-connect select:not(.media-ip-select)'); select.value = ${JSON.stringify(mixedStatus.lanUrls[0])}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  await evaluate('Array.from(document.querySelectorAll(".ip-connect button")).find(b => b.innerText === "创建房间").click()');
-  await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), 'Mixed IP room was not created').catch(async (error) => {
-    console.error(await evaluate('document.querySelector(".app__side").innerText'));
-    throw error;
-  });
-  await until(() => evaluate('document.querySelector("#sidebar-tab-share").getAttribute("aria-selected") === "true"'), 'Entering a room should open screen sharing');
-  const roomBeforeTabs = await evaluate('document.querySelector(".roomcode__value").innerText');
-  await evaluate('document.querySelector("#sidebar-tab-room").click(); document.querySelector("#sidebar-tab-share").click()');
-  assert.equal(await evaluate('document.querySelector(".roomcode__value").innerText'), roomBeforeTabs, 'Tabs must preserve the room');
-  assert.equal(await evaluate('Boolean(document.querySelector(".sidebar-header button[title]"))'), true, 'Invite must remain accessible on sharing page');
-  fs.writeFileSync(path.join(output, 'sidebar-sharing.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
-  await evaluate('document.querySelector("#sidebar-tab-room").click()');
-  fs.writeFileSync(path.join(output, 'sidebar-room.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
-  assert.equal(await evaluate('document.querySelector(".media-ip-select").disabled'), true);
-  fs.writeFileSync(path.join(output, 'mixed-mode.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
-  await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.innerText.trim())).click()');
-  await until(() => evaluate('!document.querySelector(".roomcode__value")'), 'Mixed room did not close');
-  await openModes();
-  await selectMode(0);
-  assert.equal(await evaluate('localStorage.getItem("gs.connectionMode")'), 'lan');
-  await evaluate('localStorage.setItem("gs.connectionMode", "uu"); location.reload(); true');
-  await until(() => evaluate('document.querySelector(".ip-connect h2")?.innerText === "IP 连接"'), 'Saved mode not restored');
-  assert.equal(await evaluate('Array.from(document.querySelectorAll(".collapse__toggle")).some(b => b.innerText.includes("本机信令服务"))'), false, 'Technical server settings should be hidden');
-  await openModes(); await selectMode(1);
-  assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /端口映射/);
-  await openModes(); await selectMode(2);
-  assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /不转发画面和声音/);
-  await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
-  assert.equal(await evaluate('document.querySelectorAll(".ip-connect form input").length'), 0, 'Cloudflare should offer invitation joining, not LAN IP fields');
-  await openModes(); await selectMode(0);
-  fs.writeFileSync(path.join(output, 'mode-ip.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
-  console.log('PASS: four available modes including experimental mixed mode, legacy UU migration, first-run chooser, saved preference, switch, and mode-specific guidance');
-  assert.match(await evaluate('document.querySelector(".ip-connect").innerText'), /UU/);
-  const sources = await evaluate('window.gameShare.capture.listSources().then(items => items.map(item => ({id:item.id,kind:item.kind})))');
-  assert.ok(sources.some((source) => source.kind === 'screen'), 'No real screen capture source');
+    await until(() => evaluate('!document.querySelector(".roomcode__value")'), 'Room not left');
+  }
+  async function selectConfig(signaling, mediaPolicy) {
+    await fill('[data-signaling]', signaling); await fill('[data-media-policy]', mediaPolicy);
+  }
   const status = await evaluate('window.gameShare.server.getStatus()');
-  const lanAddress = new URL(status.lanUrls[0]).hostname;
-  console.log('PASS: packaged renderer, preload and real screen enumeration');
-  const initialRooms = (await health()).rooms;
-  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /尚未创建房间/);
-  await evaluate(`(() => {
-    const select = document.querySelector('.ip-connect select');
-    select.value = ${JSON.stringify(status.lanUrls[0])};
-    select.dispatchEvent(new Event('change', {bubbles:true}));
-  })()`);
-  await evaluate('Array.from(document.querySelectorAll(".ip-connect button")).find(b => b.innerText === "创建房间").click()');
-  await until(() => evaluate('document.querySelector(".roomcode__value")?.innerText'), 'Create IP room button did not enter a room');
-  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间已创建 · 等待朋友/);
-  assert.equal(await evaluate('Boolean(document.querySelector(".app__header .status__rtt"))'), false, 'Host must not show a localhost RTT');
-  assert.equal((await health()).rooms, initialRooms + 1);
-  const ownRoom = await evaluate('document.querySelector(".roomcode__value").innerText');
-  visitor = io('http://[::1]:8080', { reconnection: false });
-  await new Promise((resolve, reject) => { visitor.once('connect', resolve); visitor.once('connect_error', reject); });
-  const visit = await new Promise((resolve, reject) => visitor.timeout(3000).emit('join-room', { roomCode: ownRoom, nickname: 'Status test friend' }, (err, result) => err ? reject(err) : resolve(result)));
-  assert.equal(visit.ok, true);
-  await until(() => evaluate('document.querySelector(".app__header .status")?.innerText === "朋友已加入"'), 'Host should show that a friend joined');
-  await until(() => evaluate('Array.from(document.querySelectorAll(".tile__status")).some(el => el.innerText === "等待共享")'), 'Idle peer should wait for sharing');
-  assert.equal(await evaluate('Boolean(document.querySelector(".tile__diag"))'), false, 'Idle peers must not show media failure diagnostics');
-  visitor.emit('share-started', { quality: 'medium' });
-  await until(() => evaluate('Array.from(document.querySelectorAll(".tile__status")).some(el => el.innerText.startsWith("音视频 ·"))'), 'Publishing peer should show media connection state');
-  visitor.emit('share-stopped', { reason: 'user' });
-  await until(() => evaluate('Array.from(document.querySelectorAll(".tile__status")).some(el => el.innerText === "等待共享")'), 'Stopped peer should return to waiting');
-  console.log('PASS: idle, publishing and stopped media states are independent of room signaling');
-  visitor.disconnect();
-  await until(() => evaluate('document.querySelector(".app__header .status")?.innerText.includes("房间已创建 · 等待朋友")'), 'Host should wait again after the friend leaves');
-  await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.innerText.trim())).click()');
-  await until(async () => (await health()).rooms === initialRooms, 'Test room was not closed');
-  await until(() => evaluate('document.querySelector(".app__header .status")?.innerText === "尚未创建房间"'), 'Leaving a room should reset the host status');
-  await openModes(); await selectMode(0);
+  const mediaIp = status.mediaAddresses.find(item => item.family === 'IPv4')?.address ?? status.mediaAddresses[0]?.address;
+  assert.ok(mediaIp, 'A local media adapter is required');
+  const directAddress = status.lanUrls[0] ?? status.publicV6Urls[0];
+  assert.ok(directAddress, 'A signaling adapter address is required');
+  assert.equal(await evaluate('Boolean(document.querySelector(".diagnostics-panel"))'), false);
+  assert.equal(await evaluate('Boolean(window.gameShare.diagnostics)'), false);
+  // Both signaling sources must support all media strategies without changing them.
+  for (const signaling of ['ip', 'external']) for (const policy of ['internet-auto', 'local-auto', 'selected-ip-experimental']) {
+    await role('host'); await selectConfig(signaling, policy);
+    if (signaling === 'ip') await fill('[data-room-address=local]', directAddress);
+    else await fill('[data-room-address=external]', 'https://room.example.test:9443');
+    if (policy === 'selected-ip-experimental') {
+      assert.equal(await evaluate('document.querySelector("[data-media-ip]").value'), '');
+      assert.equal(await evaluate('document.querySelector(".connection-config-form button[type=submit]").disabled'), true);
+      await fill('[data-media-ip]', mediaIp);
+    }
+    await submit();
+    await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), `Host did not create ${signaling}/${policy}`);
+    await until(() => evaluate('document.querySelector("#sidebar-tab-share").getAttribute("aria-selected") === "true"'), 'Joining must open sharing page');
+    assert.equal(await evaluate('document.querySelector("[data-signaling]").disabled'), true);
+    assert.equal(await evaluate('document.querySelector("[data-media-policy]").disabled'), true);
+    const code = await evaluate('document.querySelector(".roomcode__value").textContent');
+    visitor = io('http://[::1]:8080', { reconnection: false });
+    await new Promise((resolve, reject) => { visitor.once('connect', resolve); visitor.once('connect_error', reject); });
+    const before = await evaluate('window.__testPCs.length');
+    const joined = await new Promise((resolve, reject) => visitor.timeout(3000).emit('join-room', { roomCode: code, nickname: 'Configuration test viewer' }, (err, value) => err ? reject(err) : resolve(value)));
+    assert.equal(joined.ok, true);
+    await until(() => evaluate(`window.__testPCs.length > ${before}`), 'No native WebRTC connection created');
+    const iceServers = await evaluate('window.__testPCs.at(-1).getConfiguration().iceServers');
+    assert.equal(iceServers.length > 0, policy === 'internet-auto', `ICE server policy must follow media choice for ${signaling}/${policy}`);
+    await until(() => evaluate('Array.from(document.querySelectorAll(".tile__status")).some(el => el.textContent === "等待共享")'), 'Idle member must wait for sharing');
+    visitor.disconnect(); visitor = null;
+    await leave();
+  }
+  console.log('PASS: six host combinations create actual rooms; native ICE configuration follows media choice; room configuration is locked and idle members wait for sharing');
+
   host = io('http://[::1]:8080', { reconnection: false });
   await new Promise((resolve, reject) => { host.once('connect', resolve); host.once('connect_error', reject); });
-  const qualityRequests = [];
-  host.on('quality-request', env => qualityRequests.push(env.payload.level));
-  const created = await new Promise((resolve, reject) => host.timeout(3000).emit('create-room', { nickname: 'UI test host', allowIpJoin: true }, (err, result) => err ? reject(err) : resolve(result)));
+  const created = await new Promise((resolve, reject) => host.timeout(3000).emit('create-room', { nickname: 'Invite host', allowIpJoin: true }, (err, value) => err ? reject(err) : resolve(value)));
   assert.equal(created.ok, true);
-  await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
-  await until(() => evaluate('Boolean(document.querySelector(".ip-connect details"))'), 'Manual IP form missing');
-  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间连接 · 未连接/);
-  await evaluate('document.querySelector(".ip-connect details").open = true');
-  await evaluate(`(() => {
-    const input = document.querySelector('.ip-connect form input');
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(lanAddress)});
-    input.dispatchEvent(new Event('input', {bubbles:true}));
-  })()`);
-  if (initialRooms > 0) {
-    await evaluate(`(() => { const input = document.querySelectorAll('.ip-connect form input')[1]; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(created.data.roomCode)}); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
+  const invite = (data, prefix = 'GS3') => `${prefix}.${Buffer.from(JSON.stringify({ server: 'http://[::1]:8080', room: created.data.roomCode, ...data })).toString('base64')}`;
+  const tunnelBefore = await evaluate('window.gameShare.tunnel.getStatus()');
+  for (const signaling of ['ip', 'external', 'cloudflare']) for (const mediaPolicy of ['internet-auto', 'local-auto', 'selected-ip-experimental']) {
+    await role('host'); await role('guest');
+    const token = invite({ signaling, mediaPolicy, mediaIp: '192.0.2.123' });
+    await fill('[data-invitation]', token);
+    await until(() => evaluate(`document.querySelector('[data-signaling]').value === '${signaling}' && document.querySelector('[data-media-policy]').value === '${mediaPolicy}'`), 'Pasting must immediately select both invitation settings');
+    assert.equal(await evaluate('document.querySelector("[data-signaling]").disabled'), true);
+    assert.equal(await evaluate('document.querySelector("[data-media-policy]").disabled'), true);
+    if (mediaPolicy === 'selected-ip-experimental') {
+      assert.equal(await evaluate('document.querySelector("[data-media-ip]").value'), '', 'Never copy or default the host media IP');
+      assert.equal(await evaluate('document.querySelector("[data-media-ip]").disabled'), false, 'Guest must be able to choose their own adapter');
+      assert.equal(await evaluate('document.querySelector(".connection-config-form button[type=submit]").disabled'), true);
+      await fill('[data-media-ip]', mediaIp);
+      if (signaling === 'cloudflare') {
+        await sleep(250);
+        fs.writeFileSync(path.join(output, 'unified-guest-ip.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
+      }
+    } else assert.equal(await evaluate('Boolean(document.querySelector("[data-media-ip]"))'), false);
+    const pcCount = await evaluate('window.__testPCs.length');
+    await submit(); await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), `GS3 join failed: ${signaling}/${mediaPolicy}`);
+    await until(() => evaluate(`window.__testPCs.length > ${pcCount}`), 'Invited client did not create a native media connection');
+    assert.equal(await evaluate('window.__testPCs.at(-1).getConfiguration().iceServers.length > 0'), mediaPolicy === 'internet-auto', 'Invited media configuration must follow the invitation, independently of signaling');
+    assert.equal((await evaluate('window.gameShare.tunnel.getStatus()')).enabled, tunnelBefore.enabled, 'Guests must not start a tunnel');
+    await leave();
   }
-  await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'IP connect button stayed disabled');
-  await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
-  await until(async () => (await evaluate('document.querySelector(".roomcode__value")?.innerText')) === created.data.roomCode, 'IP button did not join the host room');
-  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间连接 · 已连接/);
-  console.log(initialRooms > 0 ? 'PASS: actual UI creates/leaves a test room and joins by IP with an explicit code alongside existing rooms' : 'PASS: actual UI creates an IP room, leaves it, and joins by bare IP without a room code');
-  await until(() => qualityRequests.at(-1) === 'GRID', 'Normal view must request GRID');
-  await evaluate('Array.from(document.querySelectorAll(".tile__act")).find(b => /^(放大|Enlarge)$/.test(b.innerText.trim())).click()');
-  await until(() => qualityRequests.at(-1) === 'FOCUS', 'Focused view must request FOCUS');
+  console.log('PASS: all nine GS3 invitation combinations select and lock settings on paste, join real rooms, require only guest-local media IP, and never start guest tunnels');
+
+  for (const fields of [
+    { mode: 'lan', mediaPolicy: 'local-auto' },
+    { mode: 'public', mediaPolicy: 'internet-auto' },
+    { mode: 'cloudflare', mediaPolicy: 'internet-auto' },
+    { mode: 'mixed', mediaPolicy: 'selected-ip-experimental', signaling: 'cloudflare' },
+  ]) {
+    await role('host'); await role('guest');
+    await fill('[data-invitation]', invite(fields, fields.mode === 'mixed' ? 'GS2' : 'GS1'));
+    await until(() => evaluate(`document.querySelector('[data-media-policy]').value === '${fields.mediaPolicy}'`), 'Legacy policy not migrated');
+    if (fields.mode === 'mixed') await fill('[data-media-ip]', mediaIp);
+    await submit(); await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), `Legacy ${fields.mode} join failed`); await leave();
+  }
+  await fill('[data-invitation]', 'GS4.future');
+  assert.match(await evaluate('document.querySelector("[role=alert]").textContent'), /更新版本/);
+  await fill('[data-invitation]', 'GS3.broken');
+  assert.match(await evaluate('document.querySelector("[role=alert]").textContent'), /损坏/);
+  assert.equal(await evaluate('document.querySelector(".connection-config-form button[type=submit]").disabled'), true);
+  await fill('[data-invitation]', '');
+  assert.equal(await evaluate('document.querySelector("[data-signaling]").disabled'), false);
+  await selectConfig('external', 'internet-auto');
+  await fill('[data-join-address]', 'http://[::1]:8080'); await fill('[data-join-code]', created.data.roomCode);
+  await submit(); await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), 'Manual join failed');
+  async function resolutionSelected(height) {
+    return evaluate(`Array.from(document.querySelectorAll('[data-video-resolution]')).find(button => Number(button.dataset.videoResolution) === ${height})?.getAttribute('aria-checked') === 'true'`);
+  }
+  // Sender resolution is local and survives focus, float mode and restarts.
+  await fill('[data-video-bitrate]', '1000000');
+  assert.equal(await evaluate('document.querySelectorAll("[data-video-resolution]").length'), 3);
+  assert.equal(await resolutionSelected(540), true);
+  await evaluate(`Array.from(document.querySelectorAll('[data-video-resolution]')).find(button => Number(button.dataset.videoResolution) === 1080).click()`);
+  await evaluate('Array.from(document.querySelectorAll("#sidebar-page-share button")).find(b => b.title.includes("测试") || b.title.includes("test")).click()');
+  await until(() => evaluate('Boolean(document.querySelector("#sidebar-page-share .tag--live"))'), 'Test sharing did not start');
+  await evaluate('document.querySelector("#sidebar-tab-room").click(); document.querySelector("#sidebar-tab-share").click()');
+  assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").value'), '1000000');
+  assert.equal(await evaluate('Boolean(document.querySelector("#sidebar-page-share .tag--live"))'), true);
+  const quality = []; host.on('quality-request', value => quality.push(value.payload.level));
   await evaluate('window.gameShare.windowMode.setEnabled(true)');
-  await until(() => qualityRequests.at(-1) === 'THUMBNAIL', 'Float mode must override retained focus with THUMBNAIL');
+  await sleep(250);
+  assert.equal(await resolutionSelected(1080), true);
   await evaluate('window.gameShare.windowMode.setEnabled(false)');
-  await until(() => qualityRequests.at(-1) === 'FOCUS', 'Leaving float must restore retained focus');
-  await evaluate('window.gameShare.windowMode.setEnabled(true)');
-  await until(() => qualityRequests.at(-1) === 'THUMBNAIL', 'Reentering float must request lowest quality');
-  const beforeRestore = qualityRequests.length;
-  await evaluate('Array.from(document.querySelectorAll(".tile__act")).find(b => /^(还原|Restore)$/.test(b.innerText.trim())).click()');
-  await until(() => qualityRequests.length > beforeRestore && qualityRequests.at(-1) === 'THUMBNAIL', 'Focus changes inside float must stay lowest');
-  visitor = io('http://[::1]:8080', { reconnection: false });
-  const lateQuality = []; visitor.on('quality-request', env => lateQuality.push(env.payload.level));
-  await new Promise((resolve, reject) => { visitor.once('connect', resolve); visitor.once('connect_error', reject); });
-  const lateJoin = await new Promise((resolve, reject) => visitor.timeout(3000).emit('join-room', { roomCode: created.data.roomCode, nickname: 'Late float peer' }, (err, result) => err ? reject(err) : resolve(result)));
-  assert.equal(lateJoin.ok, true);
-  await until(() => lateQuality.at(-1) === 'THUMBNAIL', 'New float members must receive lowest quality request');
-  assert.equal(qualityRequests.at(-1), 'THUMBNAIL');
-  await evaluate('window.gameShare.windowMode.setEnabled(false)');
-  await until(() => qualityRequests.at(-1) === 'GRID' && lateQuality.at(-1) === 'GRID', 'Leaving unfocused float must restore GRID for every member');
-  visitor.disconnect();
-  console.log('PASS: float mode fixes all requests to THUMBNAIL, including focus changes and late members; normal quality restores on exit');
-  assert.equal(await evaluate('Array.from(document.querySelectorAll("button")).find(b => b.innerText.includes("· 切换")).disabled'), true, 'Mode switching must be blocked while in a room');
-  await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.innerText.trim())).click()');
-  await until(() => evaluate('!document.querySelector(".roomcode__value")'), 'Did not leave before invitation test');
-  await openModes(); await selectMode(1);
-  await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
-  const invitation = `GS1.${Buffer.from(JSON.stringify({ server: 'http://[::1]:8080', room: created.data.roomCode, mode: 'lan', mediaPolicy: 'local-auto' })).toString('base64')}`;
-  await evaluate(`(() => { const input = document.querySelector('.ip-connect textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, 'invalid invitation'); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
-  await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'Malformed invitation input not ready');
-  await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
-  await until(() => evaluate('document.querySelector(".ip-connect [role=alert]")?.innerText.includes("未识别到邀请链接")'), 'Malformed invitation error should be visible');
-  await until(() => evaluate('document.querySelector(".app__header .status")?.innerText.includes("房间连接 · 连接失败")'), 'Failed join should show a failed guest connection');
-  await evaluate(`(() => { const input = document.querySelector('.ip-connect textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(invitation)}); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
-  await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'Invitation join stayed disabled');
-  await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
-  await until(async () => (await evaluate('document.querySelector(".roomcode__value")?.innerText')) === created.data.roomCode, 'Invitation did not join the host room');
-  assert.equal(await evaluate('document.querySelector(".ip-connect h2").innerText'), 'IP 连接', 'Invitation must override current public mode');
-  console.log('PASS: invitation mode overrides selection and joins a real room, switching is locked during a room');
-  assert.match(await evaluate('document.querySelector(".app__header .status").innerText'), /房间连接 · 已连接/);
-  console.log('PASS: host room lifecycle (idle, created, friend joined, waiting, left) without local RTT; guest failure/retry/connected status');
-  assert.equal(await evaluate('Boolean(document.querySelector(".ip-connect form"))'), false, 'Joined room should hide the connection form');
-  await evaluate('Array.from(document.querySelectorAll("button")).find(b => /^(离开房间|Leave room)$/.test(b.innerText.trim())).click()');
-  await until(() => evaluate('!document.querySelector(".roomcode__value")'), 'Did not leave before GS2 invitation test');
-  await openModes(); await selectMode(1);
-  await evaluate('document.querySelector(".connection-roles input[value=guest]").click()');
-  const mixedInvitation = `GS2.${Buffer.from(JSON.stringify({ server: 'http://[::1]:8080', room: created.data.roomCode, mode: 'mixed', mediaPolicy: 'selected-ip-experimental', signaling: 'cloudflare' })).toString('base64')}`;
-  await evaluate(`(() => { const input = document.querySelector('.ip-connect textarea'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(mixedInvitation)}); input.dispatchEvent(new Event('input', {bubbles:true})); })()`);
-  await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
-  await until(() => evaluate('Boolean(document.querySelector(".media-ip-select"))'), 'GS2 invitation did not open mixed configuration');
-  assert.equal(await evaluate('document.querySelector(".ip-connect textarea").value'), mixedInvitation, 'Preserve the invitation when asking for the local IP');
-  assert.equal(await evaluate('document.querySelector("input[name=mixed-signaling][value=cloudflare]").checked'), true);
-  assert.equal(await evaluate('document.querySelector(".ip-connect form button").disabled'), true);
-  await evaluate(`(() => { const select = document.querySelector('.media-ip-select'); select.value = ${JSON.stringify(mixedStatus.mediaAddresses[0].address)}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
-  await until(() => evaluate('!document.querySelector(".ip-connect form button").disabled'), 'GS2 should allow joining after choosing an IP');
-  await evaluate('document.querySelector(".ip-connect form").requestSubmit()');
-  await until(async () => await evaluate('document.querySelector(".roomcode__value")?.innerText') === created.data.roomCode, 'GS2 invitation did not join');
-  assert.equal(await evaluate('document.querySelector(".media-ip-select").value'), mixedStatus.mediaAddresses[0].address);
-  console.log('PASS: mixed mode creates an IP room; GS2 restores signaling, requires an independently selected local IP, and joins without starting a guest tunnel');
-  const screenshot = await command('Page.captureScreenshot');
-  fs.writeFileSync(path.join(output, 'packaged-ip-panel.png'), Buffer.from(screenshot.data, 'base64'));
+  await evaluate('Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "放大")?.click()');
+  await sleep(250);
+  assert.equal(quality.length, 0, 'Focus and floating mode must not request different sender quality');
+  assert.equal(await evaluate('localStorage.getItem("gs.videoResolution")'), '1080');
+  fs.writeFileSync(path.join(output, 'manual-resolution.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
+  await leave();
+  await evaluate('localStorage.removeItem("gs.connectionConfig"); localStorage.setItem("gs.connectionMode", "uu"); location.reload(); true');
+  await until(() => evaluate('document.querySelector("[data-signaling]")?.value === "ip" && document.querySelector("[data-media-policy]")?.value === "local-auto"'), 'Legacy UU preference migration failed');
+  await until(() => resolutionSelected(1080), 'Resolution preference must restore');
+  await evaluate('localStorage.setItem("gs.videoResolution", "2160"); location.reload(); true');
+  await until(() => resolutionSelected(540), 'Invalid stored resolution must restore 540p');
+  console.log('PASS: old invites, manual join, live sharing/tab/bitrate preservation, user resolution overrides focus/float, resolution persistence and invalid-value fallback, UU migration');
   await evaluate('setTimeout(() => window.gameShare.windowControl.close(), 100); true');
-  }
 } catch (error) {
   if (ws?.readyState === 1) {
     const id = 999999;

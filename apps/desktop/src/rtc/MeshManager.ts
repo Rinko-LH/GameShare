@@ -1,4 +1,5 @@
 import { normalizeVideoBitrateLimit } from '../video-bitrate';
+import { normalizeVideoResolution, type VideoResolution } from '../video-resolution';
 import { TRACK_ROLES, type TrackRole } from '@game-share/protocol';
 import type { QualityLevel } from '@game-share/protocol';
 import type { IceServerConfig } from '@game-share/shared';
@@ -30,6 +31,7 @@ export interface MeshManagerOptions {
   signaling: MeshSignaling;
   iceServers: IceServerConfig[];
   videoBitrateLimit?: number | null;
+  videoResolution?: VideoResolution;
   selectedMediaIp?: string | null;
   selfPeerId: string;
   getSourceHeight?: () => number | null;
@@ -69,6 +71,7 @@ export class MeshManager {
   /** 当前共享帧率偏好；新建链路时立即应用，否则中途加入的观看者拿不到它 */
   #userFps: number | null = null;
   #videoBitrateLimit: number | null = null;
+  #videoResolution: VideoResolution | undefined;
   #unsubscribe: Array<() => void> = [];
   /**
    * 三条本地轨，按角色存。
@@ -83,6 +86,7 @@ export class MeshManager {
     this.#signaling = opts.signaling;
     this.#iceServers = opts.iceServers;
     this.#videoBitrateLimit = normalizeVideoBitrateLimit(opts.videoBitrateLimit);
+    this.#videoResolution = opts.videoResolution === undefined ? undefined : normalizeVideoResolution(opts.videoResolution);
     this.#selectedMediaIp = opts.selectedMediaIp ?? null;
     this.#selfPeerId = opts.selfPeerId;
     this.#getSourceHeight = opts.getSourceHeight ?? (() => null);
@@ -184,6 +188,7 @@ export class MeshManager {
       signaling: this.#signaling,
       iceServers: this.#iceServers,
       videoBitrateLimit: this.#videoBitrateLimit,
+      videoResolution: this.#videoResolution,
       selectedMediaIp: this.#selectedMediaIp,
       getSourceHeight: this.#getSourceHeight,
       getSourceWidth: this.#getSourceWidth,
@@ -259,6 +264,11 @@ export class MeshManager {
   setVideoBitrateLimit(value: number | null): void {
     this.#videoBitrateLimit = normalizeVideoBitrateLimit(value);
     for (const link of this.#links.values()) void link.setVideoBitrateLimit(this.#videoBitrateLimit);
+  }
+
+  setVideoResolution(height: VideoResolution): void {
+    this.#videoResolution = normalizeVideoResolution(height);
+    for (const link of this.#links.values()) void link.setVideoResolution(this.#videoResolution);
   }
 
   getLink(peerId: string): PeerLink | undefined {
