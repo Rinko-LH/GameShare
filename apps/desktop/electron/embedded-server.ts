@@ -1,3 +1,4 @@
+import os from 'node:os';
 import {
   DEFAULT_SIGNALING_HOST,
   createSignalingServer,
@@ -37,6 +38,7 @@ export interface EmbeddedServerStatus {
   localUrl: string;
   /** 局域网 IPv4，只有同一个路由器下的设备能连 */
   lanUrls: string[];
+  mediaAddresses: Array<{ interfaceName: string; address: string; family: string }>;
   /** 公网 IPv4，家宽一般没有 */
   publicV4Urls: string[];
   /** 公网 IPv6，跨网络首选（前提是路由器放行入站） */
@@ -249,8 +251,10 @@ export class EmbeddedSignalingServer {
       state,
       port,
       dualStack: this.#dualStack,
-      localUrl: `http://localhost:${port}`,
+      localUrl: this.#dualStack ? `http://[::1]:${port}` : `http://127.0.0.1:${port}`,
       lanUrls: addresses.lan.map((item) => item.url),
+      mediaAddresses: Object.entries(os.networkInterfaces()).flatMap(([interfaceName, entries]) =>
+        (entries ?? []).filter(entry => !entry.internal).map(entry => ({ interfaceName, address: entry.address, family: entry.family }))),
       publicV4Urls: addresses.publicV4.map((item) => item.url),
       publicV6Urls: addresses.publicV6.map((item) => item.url),
       recommendedUrl: pickRecommended(addresses)?.url ?? null,

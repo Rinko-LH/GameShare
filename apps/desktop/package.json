@@ -43,7 +43,7 @@
     "electronVersion": "43.7.2",
     "npmRebuild": false,
     "directories": {
-      "output": "release"
+      "output": "../../../release/installer"
     },
     "files": [
       "dist/**/*",

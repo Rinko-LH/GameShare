@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const desktop = path.join(root, 'apps', 'desktop');
+const releaseRoot = path.resolve(root, '..', 'release');
 const env = {
   ...process.env,
   ELECTRON_BUILDER_CACHE: process.env.ELECTRON_BUILDER_CACHE ?? path.join(root, '.cache', 'electron-builder'),
@@ -30,8 +31,8 @@ async function main() {
     if (!existsSync(required)) throw new Error(`Missing build dependency: ${required}`);
   }
   // Always use a new build directory, so an existing running copy is never overwritten.
-  let output = 'release-folder';
-  for (let index = 2; existsSync(path.join(desktop, output)); index++) output = `release-folder-${index}`;
+  let output = path.join(releaseRoot, 'release-folder');
+  for (let index = 2; existsSync(output); index++) output = path.join(releaseRoot, `release-folder-${index}`);
   await run([path.join(desktop, 'scripts', 'build-electron.mjs')], desktop);
   await run([path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], desktop);
   await run([
@@ -40,7 +41,7 @@ async function main() {
     `--config.electronDist=${electronDist}`,
     `--config.directories.output=${output}`,
   ], desktop);
-  console.log(`Folder build ready: ${path.join(desktop, output, 'win-unpacked')}`);
+  console.log(`Folder build ready: ${path.join(output, 'win-unpacked')}`);
 }
 
 main().catch((err) => { console.error(err.message); process.exitCode = 1; });

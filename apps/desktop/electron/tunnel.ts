@@ -1,3 +1,4 @@
+import { resolveSignalingOrigin } from './signaling-origin';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -115,6 +116,7 @@ export class TunnelManager {
   #enabled: boolean;
   #status: TunnelStatus;
   #child: ChildProcess | null = null;
+  #startGeneration = 0;
   #buffer = '';
   #timer: NodeJS.Timeout | null = null;
   #onChange: (status: TunnelStatus) => void = () => {};
@@ -148,6 +150,14 @@ export class TunnelManager {
 
     this.#buffer = '';
     this.#publish('starting', null, null);
+    const generation = ++this.#startGeneration;
+    let origin: string;
+    try { origin = await resolveSignalingOrigin(this.#port); }
+    catch (error) {
+      if (generation !== this.#startGeneration) return this.#status;
+      return this.#publish('failed', null, error instanceof Error ? error.message : String(error));
+    }
+    if (generation !== this.#startGeneration) return this.#status;
 
     let child: ChildProcess;
     try {
@@ -160,7 +170,7 @@ export class TunnelManager {
           '--output',
           'json',
           '--url',
-          `http://localhost:${this.#port}`,
+          origin,
         ],
         // windowsHide：否则每次开隧道都会闪一个黑窗口
         { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
@@ -209,6 +219,7 @@ export class TunnelManager {
   }
 
   async stop(): Promise<void> {
+    this.#startGeneration++;
     this.#clearTimer();
     this.#buffer = '';
 

@@ -90,6 +90,7 @@ export interface EmbeddedServerStatus {
   localUrl: string;
   /** 局域网 IPv4，只有同一个路由器下的设备能连 */
   lanUrls: string[];
+  mediaAddresses: Array<{ interfaceName: string; address: string; family: string }>;
   /** 公网 IPv4，家宽一般没有 */
   publicV4Urls: string[];
   /** 公网 IPv6，跨网络首选（前提是路由器放行入站） */

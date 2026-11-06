@@ -28,6 +28,7 @@ export interface MeshSignaling extends PeerSignaling {
 export interface MeshManagerOptions {
   signaling: MeshSignaling;
   iceServers: IceServerConfig[];
+  selectedMediaIp?: string | null;
   selfPeerId: string;
   getSourceHeight?: () => number | null;
   /** 同上，码率自适应换算需要源像素量（宽 × 高） */
@@ -51,6 +52,7 @@ type PendingSignal =
 export class MeshManager {
   #signaling: MeshSignaling;
   #iceServers: IceServerConfig[];
+  #selectedMediaIp: string | null;
   #selfPeerId: string;
   #getSourceHeight: () => number | null;
   #getSourceWidth: () => number | null;
@@ -77,6 +79,7 @@ export class MeshManager {
   constructor(opts: MeshManagerOptions) {
     this.#signaling = opts.signaling;
     this.#iceServers = opts.iceServers;
+    this.#selectedMediaIp = opts.selectedMediaIp ?? null;
     this.#selfPeerId = opts.selfPeerId;
     this.#getSourceHeight = opts.getSourceHeight ?? (() => null);
     this.#getSourceWidth = opts.getSourceWidth ?? (() => null);
@@ -176,6 +179,7 @@ export class MeshManager {
       remotePeerId,
       signaling: this.#signaling,
       iceServers: this.#iceServers,
+      selectedMediaIp: this.#selectedMediaIp,
       getSourceHeight: this.#getSourceHeight,
       getSourceWidth: this.#getSourceWidth,
       onStateChange: (state, detail) => this.#onLinkStateChange(remotePeerId, state, detail),

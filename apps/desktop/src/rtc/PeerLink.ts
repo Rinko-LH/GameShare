@@ -1,3 +1,4 @@
+import { allowsMediaCandidate, normalizedIp, restrictMediaSdp } from './media-ip';
 import {
   DEFAULT_QUALITY,
   ROLE_MEDIA_KIND,
@@ -137,6 +138,7 @@ export interface PeerLinkOptions {
   remotePeerId: string;
   signaling: PeerSignaling;
   iceServers: IceServerConfig[];
+  selectedMediaIp?: string | null;
   /**
    * 采集源的实际编码高度。
    *
@@ -293,6 +295,10 @@ export class PeerLink {
   /** 保证「挂轨道 → 生成 offer」不会抢跑，否则会协商出单向 m-line */
   #pendingTrackApply: Promise<void> = Promise.resolve();
   #closed = false;
+  #selectedMediaIp: string | null;
+  #mediaIpTimer: ReturnType<typeof setInterval> | null = null;
+  #unknownMediaRouteCount = 0;
+  #mediaIpFailure: string | null = null;
   #state: LinkState = 'new';
   /** 已上报过的 ICE 错误，key = `url|code`。避免 mesh 场景下同一错误刷屏 */
   #reportedIceErrors = new Set<string>();
@@ -310,6 +316,7 @@ export class PeerLink {
 
   constructor(opts: PeerLinkOptions) {
     this.remotePeerId = opts.remotePeerId;
+    this.#selectedMediaIp = opts.selectedMediaIp ?? null;
     this.#signaling = opts.signaling;
     this.#getSourceHeight = opts.getSourceHeight ?? (() => null);
     this.#getSourceWidth = opts.getSourceWidth ?? (() => null);
@@ -324,7 +331,7 @@ export class PeerLink {
     this.#initiator = opts.selfPeerId > opts.remotePeerId;
     this.#polite = !this.#initiator;
 
-    this.pc = new RTCPeerConnection({ iceServers: opts.iceServers });
+    this.pc = new RTCPeerConnection({ iceServers: this.#selectedMediaIp ? [] : opts.iceServers });
 
     // m-line 只由主动方创建，被动方一律只接受。
     //
@@ -344,6 +351,10 @@ export class PeerLink {
     }
 
     this.#bind();
+    if (this.#selectedMediaIp) {
+      this.#log(`实验媒体 IP：${this.#selectedMediaIp}；未配置 STUN/TURN，候选限制不等于原生绑定`);
+      this.#mediaIpTimer = setInterval(() => { void this.readStats(); }, 500);
+    }
     this.#log(`链路创建 → ${opts.remotePeerId}（${this.#initiator ? '主动方' : '被动方'}）`);
   }
 
@@ -380,6 +391,7 @@ export class PeerLink {
 
     this.pc.onicecandidate = ({ candidate }) => {
       if (!candidate || this.#closed) return;
+      if (this.#selectedMediaIp && !allowsMediaCandidate(candidate.candidate, this.#selectedMediaIp)) return;
       this.#countCandidateType(candidate.candidate);
       this.#signaling.sendIceCandidate(this.remotePeerId, candidate.toJSON());
     };
@@ -782,6 +794,7 @@ export class PeerLink {
    * | exhausted | 重试到顶 | 「多次重试失败，只能走中继」 |
    */
   get diagnosis(): LinkDiagnosis {
+    if (this.#selectedMediaIp && (this.#mediaIpFailure || this.#state === 'failed')) return { kind: 'exhausted', summary: this.#mediaIpFailure ?? '所选 IP 的媒体连接失败', detail: '请检查双方所选 IP 是否互通；实验模式不启用 STUN/TURN。修改配置前先离开房间。', candidates: this.#describeCandidateTypes() };
     const { summary, detail, candidates } = this.#readDiagnosis();
     return { kind: this.#diagnosisKind(), summary, detail, candidates };
   }
@@ -1003,7 +1016,7 @@ export class PeerLink {
       await this.pc.setLocalDescription();
       // 自己刚生成的 offer 会把 transceiver 绑到新的 m-line 上，刷新一次
       for (const role of TRACK_ROLES) this.#pickBoundTransceiver(role);
-      const sdp = this.pc.localDescription?.sdp;
+      const sdp = this.pc.localDescription?.sdp ? restrictMediaSdp(this.pc.localDescription.sdp, this.#selectedMediaIp) : undefined;
       if (sdp) {
         this.#log(
           `发出 offer → ${this.remotePeerId} 方向=${extractVideoDirection(sdp) ?? '?'}` +
@@ -1059,7 +1072,7 @@ export class PeerLink {
       }
 
       await this.pc.setLocalDescription();
-      const answer = this.pc.localDescription?.sdp;
+      const answer = this.pc.localDescription?.sdp ? restrictMediaSdp(this.pc.localDescription.sdp, this.#selectedMediaIp) : undefined;
       if (answer) {
         this.#log(
           `发出 answer → ${this.remotePeerId} 方向=${extractVideoDirection(answer) ?? '?'}` +
@@ -1261,8 +1274,25 @@ export class PeerLink {
     }
   }
 
-  readStats(): Promise<LinkStats> {
-    return this.stats.read(this.pc);
+  async readStats(): Promise<LinkStats> {
+    const stats = await this.stats.read(this.pc);
+    if (this.#selectedMediaIp && !this.#closed && this.pc.connectionState === 'connected') {
+      const route = stats.route;
+      const actual = route?.localAddress;
+      this.#unknownMediaRouteCount = actual ? 0 : this.#unknownMediaRouteCount + 1;
+      if ((actual && (route?.relay || normalizedIp(actual) !== normalizedIp(this.#selectedMediaIp))) || this.#unknownMediaRouteCount >= 10) {
+        const reason = `实验媒体检查失败：选择 ${this.#selectedMediaIp}，实际 ${actual ?? '无法读取'}；已停止媒体连接，请离房后重新选择。`;
+        this.#mediaIpFailure = reason;
+        this.close();
+        this.#state = 'failed';
+        this.#onRemoteTracks(emptyRemoteTracks());
+        this.#onRemoteStream(new MediaStream());
+        this.#log(reason);
+        this.#onError(new Error(reason));
+        this.#onStateChange('failed', reason);
+      }
+    }
+    return stats;
   }
 
   /**
@@ -1344,6 +1374,7 @@ export class PeerLink {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    if (this.#mediaIpTimer !== null) { clearInterval(this.#mediaIpTimer); this.#mediaIpTimer = null; }
 
     // 定时器必须在 close 时清掉。链路已经销毁，退避定时器再醒来
     // 只会对着一条不存在的链路重开 ICE 并写日志 —— mesh 8 人时

@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
 const DESKTOP = path.join(ROOT, 'apps', 'desktop');
+const RELEASE_ROOT = path.resolve(ROOT, '..', 'release');
 
 /** Cache inside the workspace by default; existing shared caches can be selected via the environment. */
 const CACHE_DIR = process.env.ELECTRON_BUILDER_CACHE ?? path.join(ROOT, '.cache', 'electron-builder');
@@ -56,13 +57,13 @@ function isOutputLocked(dir) {
   }
 }
 
-/** 默认 release/，被锁就顺延 release-2、release-3 … */
+/** 默认发布根目录下 installer/，被锁时顺延。 */
 function pickOutputDir() {
-  const base = path.join(DESKTOP, 'release');
-  if (!isOutputLocked(base)) return 'release';
+  const base = path.join(RELEASE_ROOT, 'installer');
+  if (!isOutputLocked(base)) return base;
   for (let i = 2; i <= 20; i += 1) {
-    const name = `release-${i}`;
-    if (!isOutputLocked(path.join(DESKTOP, name))) return name;
+    const candidate = path.join(RELEASE_ROOT, `installer-${i}`);
+    if (!isOutputLocked(candidate)) return candidate;
   }
   return null;
 }
@@ -79,9 +80,9 @@ function run(args, cwd, label) {
   });
 }
 
-/** 把安装包投递到 release/ —— README 里写的交付路径，方便直接双击安装 */
+/** 把安装包投递到工作区发布根目录，方便直接取用。 */
 function deliver(fromDir) {
-  const deliverDir = path.join(DESKTOP, 'release');
+  const deliverDir = RELEASE_ROOT;
   if (path.resolve(fromDir) === path.resolve(deliverDir)) return;
 
   const setup = readdirSync(fromDir).find((file) => /^GameShare Setup .*\.exe$/.test(file));
@@ -139,14 +140,10 @@ async function main() {
   let outputDir = null;
   if (!ebArgs.some((arg) => /directories[.=]output/.test(arg))) {
     const name = pickOutputDir();
-    if (!name) throw new Error('release 到 release-20 全被占用，重启机器后再打包');
-    outputDir = path.join(DESKTOP, name);
-    if (name === 'release') {
-      console.log('输出目录  apps/desktop/release');
-    } else {
-      console.log(`输出目录  apps/desktop/${name}（release 被上次打包的残留句柄锁住，自动顺延）`);
-    }
-    ebArgs.push(`-c.directories.output=${name}`);
+    if (!name) throw new Error('发布目录的 installer 到 installer-20 均被占用，请释放文件后重试');
+    outputDir = name;
+    console.log(`输出目录  ${outputDir}`);
+    ebArgs.push(`-c.directories.output=${outputDir}`);
   }
 
   // 不走 `npm run build -w`：本机 npm 被 shim 拦截，且子进程再套一层 npm 只会

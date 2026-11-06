@@ -4,7 +4,7 @@ rem  GameShare - launcher for the newest packaged build.
 rem
 rem  Double-click this file. Nothing is built, nothing is installed:
 rem  it just finds the most recent win-unpacked\GameShare.exe under
-rem  apps\desktop\release* and starts it.
+rem  ..\release and legacy apps\desktop\release* and starts it.
 rem
 rem  ASCII only on purpose. This project path contains non-ASCII
 rem  characters and a .bat is read using the console codepage, so a
@@ -26,11 +26,15 @@ rem Relies on the file timestamp giving a lexically sortable "YYYY/MM/DD HH:MM"
 rem (24-hour) string.
 set "REL="
 set "RELT="
+call :consider "..\release\GameShare.exe"
+call :consider "..\release\win-unpacked\GameShare.exe"
+for /f "delims=" %%D in ('dir /b /ad "..\release" 2^>nul') do call :consider "..\release\%%D\win-unpacked\GameShare.exe"
+for /f "delims=" %%D in ('dir /b /ad "..\release" 2^>nul') do call :consider "..\release\%%D\GameShare.exe"
 for /f "delims=" %%D in ('dir /b /ad "apps\desktop\release*" 2^>nul') do call :consider "apps\desktop\%%D\win-unpacked\GameShare.exe"
 
 if not defined REL (
   echo.
-  echo [X] No packaged build found under apps\desktop\release*\
+  echo [X] No packaged build found under ..\release or legacy release folders.
   echo.
   echo     Rebuild it first:   npm run build:exe
   echo     Or start from source without packaging:   dev.bat
@@ -40,7 +44,7 @@ if not defined REL (
 )
 
 echo Launching %REL%
-start "" "%~dp0%REL%"
+start "" "%REL%"
 exit /b 0
 
 rem ---- keep whichever candidate has the newer exe -------------------------
@@ -51,12 +55,12 @@ rem to the time; different day => the date decides. Both orders are correct.
 if not exist %1 exit /b 0
 for %%F in (%1) do set "NEWT=%%~tF"
 if not defined RELT (
-  set "REL=%~1"
+  set "REL=%~f1"
   set "RELT=%NEWT%"
   exit /b 0
 )
 if "%NEWT%" GTR "%RELT%" (
-  set "REL=%~1"
+  set "REL=%~f1"
   set "RELT=%NEWT%"
 )
 exit /b 0

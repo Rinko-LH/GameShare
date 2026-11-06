@@ -206,6 +206,8 @@ export class ShareSession {
   #unsubscribe: Array<() => void> = [];
   #serverUrl = DEFAULT_SIGNALING_URL;
   #lanOnly = false;
+  #selectedMediaIp: string | null = null;
+  #mediaBlocked = false;
   /** 上一条连接状态日志，用于抑制重连风暴刷屏（见 #bindSignaling） */
   #lastConnLog = '';
   /** 诊断轮询定时器。见 #startDiagnosisPolling */
@@ -403,6 +405,22 @@ export class ShareSession {
     }
   }
 
+  configureMediaIp(address: string | null): void {
+    if (this.#state.room) throw new Error('请先离开房间再修改媒体 IP。');
+    this.#selectedMediaIp = address;
+    this.#mediaBlocked = false;
+  }
+
+  stopMediaForAddress(reason: string): void {
+    if (this.#mediaBlocked) return;
+    this.#mediaBlocked = true;
+    this.#teardownMesh();
+    const links: Record<string, PeerLinkState> = {};
+    for (const peer of this.#state.room?.peers ?? []) links[peer.peerId] = { state: 'failed', detail: reason, diagnosis: { kind: 'exhausted', summary: reason, detail: '房间信令保持连接；离开房间后重新选择媒体 IP。', candidates: '' } };
+    this.#patch({ links, remoteStreams: {}, remoteTracks: {} });
+    this.pushLog(reason);
+  }
+
   connect(url?: string, lanOnly = false): void {
     this.#serverUrl = normalizeSignalingAddress(url ?? '');
     this.#lanOnly = lanOnly;
@@ -528,13 +546,14 @@ export class ShareSession {
 
   #syncMesh(turn?: TurnRelayPayload): void {
     const room = this.#state.room;
-    if (!room) return;
+    if (!room || this.#mediaBlocked) return;
 
     if (!this.#mesh) {
       this.#mesh = new MeshManager({
         signaling: this.signaling,
         // UU/LAN uses reachable local and virtual adapter candidates, avoiding public STUN/TURN routes.
-        iceServers: this.#lanOnly ? [] : buildIceServers({ turn: turn ? shareTurn(turn) : undefined }),
+        selectedMediaIp: this.#selectedMediaIp,
+        iceServers: this.#lanOnly || this.#selectedMediaIp ? [] : buildIceServers({ turn: turn ? shareTurn(turn) : undefined }),
         selfPeerId: room.self.peerId,
         getSourceHeight: () => this.capture.sourceHeight,
         getSourceWidth: () => this.capture.sourceWidth,
