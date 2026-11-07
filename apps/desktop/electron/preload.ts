@@ -1,4 +1,5 @@
 import { ipcRenderer } from 'electron';
+import type { VoiceHotkeyConfig, VoiceHotkeyStatus } from '../src/voice-settings';
 
 import type { AudioCaptureFailure, AudioCaptureMode, AudioCapabilities } from './audio/types';
 import type { EmbeddedServerStatus } from './embedded-server';
@@ -272,6 +273,14 @@ const api = {
    * 主窗口是 `frame: false` 的（见 main.ts 里 frame 那段：原生标题栏在浮窗模式下
    * 拖不动，整个去掉了），所以最小化 / 最大化 / 关闭只能由界面自己画、自己发。
    */
+  voiceHotkey: {
+    configure: (config: VoiceHotkeyConfig): Promise<VoiceHotkeyStatus> => ipcRenderer.invoke('voice:configure-hotkey', config),
+    onState: (callback: (status: VoiceHotkeyStatus) => void): (() => void) => {
+      const listener = (_event: unknown, status: VoiceHotkeyStatus) => callback(status);
+      ipcRenderer.on('voice:hotkey-state', listener);
+      return () => ipcRenderer.off('voice:hotkey-state', listener);
+    },
+  },
   windowControl: {
     minimize: (): void => {
       ipcRenderer.send('win:minimize');

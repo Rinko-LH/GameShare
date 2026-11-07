@@ -2,6 +2,8 @@
  * 与 apps/desktop/electron/preload.ts 中的结构保持一致。
  * preload 与 renderer 分属两个 tsconfig，无法直接共享类型文件。
  */
+import type { VoiceHotkeyConfig, VoiceHotkeyStatus } from '../voice-settings';
+
 export interface AppInfo {
   appVersion: string;
   electron: string;
@@ -240,6 +242,10 @@ export interface GameShareTileApi {
 }
 
 export interface GameShareApi {
+  voiceHotkey: {
+    configure(config: VoiceHotkeyConfig): Promise<VoiceHotkeyStatus>;
+    onState(callback: (status: VoiceHotkeyStatus) => void): () => void;
+  };
   getAppInfo(): Promise<AppInfo>;
   /**
    * 复制文本到系统剪贴板（成功为 true）。

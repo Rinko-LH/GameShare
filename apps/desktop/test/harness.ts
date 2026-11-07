@@ -599,7 +599,7 @@ async function main(): Promise<void> {
     const inb = link.inbound;
     note(
       `链路 ${link.peerId.slice(0, 6)} ${link.state} ` +
-        `入 ${inb ? `${inb.frameWidth}x${inb.frameHeight} ${inb.framesPerSecond}fps ${Math.round(inb.bitrateBps / 1000)}kbps ${inb.framesDecoded}帧` : '无'} ` +
+        `入 ${inb ? `${inb.frameWidth}x${inb.frameHeight} ${inb.framesPerSecond}fps ${inb.bitrateBps === null ? '采样中' : `${Math.round(inb.bitrateBps / 1000)}kbps`} ${inb.framesDecoded}帧` : '无'} ` +
         `档位=${link.qualityLevel ?? '?'} 源高=${link.sourceHeight ?? '?'} ` +
         `出 cap=${link.encoding?.maxBitrate ?? '?'} scale=${link.encoding?.scaleResolutionDownBy.toFixed(3) ?? '?'}` +
         `（期望 ${link.expectedScaleResolutionDownBy?.toFixed(3) ?? '?'}） ` +

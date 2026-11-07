@@ -16,9 +16,12 @@ import type {
   TunnelStatus,
 } from './types/global';
 import type { LinkStats, RemoteTracks } from './rtc/types';
+import { formatBitrate } from './rtc/stats';
 import type { LinkDiagnosis } from './rtc/PeerLink';
 import { ShareSession } from './session/ShareSession';
 import { ConnectionPanel } from './ConnectionPanel';
+import { VoicePanel, useVoiceHotkey } from './VoicePanel';
+import { readVoicePreferences } from './voice-settings';
 import { readConnectionConfig, saveConnectionConfig, type ConnectionConfig } from './connection-config';
 import { createInvitation, resolveInvitationConfig, parseInvitation } from './invitations';
 import { getLang, setLang, subscribeLang, t as lookup, fmt } from './i18n';
@@ -126,6 +129,9 @@ const SHARE_FPS_STORAGE_KEY = 'gs.shareFps';
 
 export default function App() {
   const [session] = useState(() => new ShareSession());
+  const [voiceBinding, setVoiceBinding] = useState(() => readVoicePreferences().binding);
+  const [voiceRecording, setVoiceRecording] = useState(false);
+  const voiceHotkeyError = useVoiceHotkey(session, voiceBinding, voiceRecording);
   const state = useSyncExternalStore(session.subscribe, session.getState);
   const t = useI18n();
 
@@ -180,6 +186,18 @@ export default function App() {
   /** 主窗口画面区；独立浮窗时保留隐藏视频层供帧泵取帧。 */
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stageFullscreen, setStageFullscreen] = useState(false);
+  const [fullscreenExitVisible, setFullscreenExitVisible] = useState(false);
+  const fullscreenExitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showFullscreenExit = useCallback(() => {
+    if (fullscreenExitTimer.current) clearTimeout(fullscreenExitTimer.current);
+    setFullscreenExitVisible(true);
+    fullscreenExitTimer.current = setTimeout(() => setFullscreenExitVisible(false), 2000);
+  }, []);
+  useEffect(() => {
+    if (stageFullscreen) showFullscreenExit();
+    else setFullscreenExitVisible(false);
+    return () => { if (fullscreenExitTimer.current) clearTimeout(fullscreenExitTimer.current); };
+  }, [stageFullscreen, showFullscreenExit]);
 
   useEffect(() => {
     const syncFullscreen = (): void => {
@@ -409,8 +427,6 @@ export default function App() {
     audioMode,
     audioFailure,
     micEnabled,
-    micError,
-    micSettings,
   } = state;
   const connected = connection.state === 'connected';
   const inRoom = room !== null;
@@ -1012,7 +1028,6 @@ export default function App() {
         {t(height === 360 ? 'share.resolutionLow' : height === 540 ? 'share.resolutionMedium' : 'share.resolutionHigh')} {height}p
       </button>)}
     </div>
-    <p className="hint hint--dim">{t('share.resolutionHint')}</p>
   </div>;
 
   const bitrateControl = <label className="ip-connect__field">
@@ -1021,7 +1036,6 @@ export default function App() {
       <option value="">{t('share.bitrateAuto')}</option>
       {VIDEO_BITRATE_OPTIONS.map(limit => <option key={limit} value={limit}>{limit / 1_000_000} Mbps</option>)}
     </select>
-    <span className="hint hint--dim">{t('share.bitrateHint')}</span>
   </label>;
 
   // 共享状态下这套列表要能反复用（initial 选源 / 共享中换源）。
@@ -2066,32 +2080,7 @@ export default function App() {
 
           </div>
           <div id="sidebar-page-share" className="sidebar-page" role="tabpanel" aria-labelledby="sidebar-tab-share" hidden={sidePage !== 'share'}>
-          {/* ---- 语音 ---- */}
-          <section className="panel panel--tight">
-            <h2>{t('mic.title')}</h2>
-            <div className="row">
-              <button
-                type="button"
-                className={micEnabled ? 'btn btn--danger' : 'btn'}
-                onClick={() => void run(() => session.setMicEnabled(!micEnabled))}
-                disabled={busy}
-              >
-                {micEnabled ? t('mic.on') : t('mic.off')}
-              </button>
-            </div>
-            {micEnabled && micSettings && (
-              <p className="hint hint--dim">
-                {t('mic.statsEcho')} {micSettings.echoCancellation ? t('mic.on2') : t('mic.off2')} · {t('mic.statsNs')}{' '}
-                {micSettings.noiseSuppression ? t('mic.on2') : t('mic.off2')} · {t('mic.statsAgc')}{' '}
-                {micSettings.autoGainControl ? t('mic.on2') : t('mic.off2')}
-              </p>
-            )}
-            {/* 失败必须说出来。做成「失败了但按钮看着像开着」等于让用户对着空气说话 */}
-            {micError && <p className="hint hint--warn">{micError}</p>}
-            {!micEnabled && !micError && (
-              <p className="hint hint--dim">{t('mic.hint')}</p>
-            )}
-          </section>
+          <VoicePanel session={session} busy={busy} visible={sidePage === 'share'} run={run} binding={voiceBinding} setBinding={setVoiceBinding} recording={voiceRecording} setRecording={setVoiceRecording} error={voiceHotkeyError} />
 
           {/* ---- 共享 ---- */}
           <section className="panel panel--tight">
@@ -2351,9 +2340,12 @@ export default function App() {
         <div
           className={`app__stage${isFloat ? " stage--tiles" : ""}`}
           ref={stageRef}
+          onPointerMove={event => {
+            if (stageFullscreen && event.clientY - event.currentTarget.getBoundingClientRect().top <= 64) showFullscreenExit();
+          }}
         >
           {stageFullscreen && (
-            <button type="button" className="stage__exit-fullscreen btn" onClick={() => void exitStageFullscreen()}>
+            <button type="button" className={`stage__exit-fullscreen btn${fullscreenExitVisible ? '' : ' stage__exit-fullscreen--hidden'}`} onClick={() => void exitStageFullscreen()}>
               {t('view.exitFullscreen')} · Esc
             </button>
           )}
@@ -2720,7 +2712,7 @@ function VideoTile({
                 {inbound.frameHeight > 0 ? `${inbound.frameHeight}p` : '—'}
               </span>
               <span>{inbound.framesPerSecond} fps</span>
-              <span>{formatBitrate(inbound.bitrateBps)}</span>
+              <span title={inbound.bitrateBps === null ? t('tile.statsCollecting') : undefined}>{formatBitrate(inbound.bitrateBps)}</span>
               <span className={route?.relay ? 'tile__route--relay' : undefined}>
                 {route
                   ? route.relay
@@ -2738,12 +2730,6 @@ function VideoTile({
       )}
     </div>
   );
-}
-
-function formatBitrate(bps: number): string {
-  if (bps <= 0) return '—';
-  if (bps < 1_000_000) return `${Math.round(bps / 1000)} Kbps`;
-  return `${(bps / 1_000_000).toFixed(2)} Mbps`;
 }
 
 /**

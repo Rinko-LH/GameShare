@@ -346,11 +346,19 @@ body {
 .stage__exit-fullscreen {
   position: fixed;
   top: 16px;
-  right: 20px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 100;
   background: var(--bg-panel);
   border: 1px solid var(--accent);
   box-shadow: 0 2px 12px #0008;
+  transition: opacity 150ms ease;
+}
+
+.stage__exit-fullscreen--hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .app__stage {

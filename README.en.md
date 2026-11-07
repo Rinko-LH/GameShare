@@ -124,6 +124,8 @@ video keeps going and you get a prompt with three choices (switch to whole-PC
 / continue silent / cancel sharing).
 
 Each remote tile has a volume button — voice and game audio adjust separately.
+
+Voice supports continuous transmission or push-to-talk. Enable the microphone, choose push-to-talk, then hold the on-screen button or configure a global keyboard shortcut. No key is assigned by default; preferences persist locally, but restarting never opens the microphone automatically. Keys also reach your game, so choose an unused binding. Enable NumLock for numpad keys. In standby the microphone stays open with transmission muted; turn the microphone off to release the device. Screen video and application audio are unaffected.
 Two badges on the tile show whether the other side is sending each track right now.
 
 ### Watching

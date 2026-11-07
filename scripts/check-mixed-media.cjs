@@ -36,7 +36,8 @@ app.whenReady().then(async () => {
         b = new MixedMediaTest.PeerLink({ selfPeerId: 'a', remotePeerId: 'z', signaling: signal(() => a), iceServers: [], selectedMediaIp: ip });
         const canvas = document.createElement('canvas'); canvas.width = 160; canvas.height = 90;
         const ctx = canvas.getContext('2d');
-        const paint = setInterval(() => { ctx.fillStyle = Date.now() % 2 ? 'red' : 'blue'; ctx.fillRect(0,0,160,90); }, 50);
+        let hue = 0;
+        const paint = setInterval(() => { ctx.fillStyle = 'hsl(' + (hue += 31) + ',100%,50%)'; ctx.fillRect(0,0,160,90); }, 50);
         const stream = canvas.captureStream(15);
         try {
           await a.setLocalTrack('video', stream.getVideoTracks()[0]);
@@ -44,6 +45,13 @@ app.whenReady().then(async () => {
           const first = await a.readStats();
           assert(first.route?.localAddress === ip && !first.route.relay, 'Initial media path must match selection');
           assert(candidates.length > 0 && candidates.every(c => c.split(' ')[4] === ip), 'Published candidates must all match selection');
+          // 对齐 500ms 路径守卫，界面采样必须仍有正常的收/发码率。
+          await Promise.all([a.readStats(), b.readStats()]);
+          for (let sample = 0; sample < 3; sample++) {
+            await pause(1000);
+            const [sent, received] = await Promise.all([a.readStats(), b.readStats()]);
+            assert(sent.outbound?.bitrateBps > 0 && received.inbound?.bitrateBps > 0, 'IP guard must not erase live video bitrate');
+          }
           if (restart) {
             const oldUfrag = a.pc.localDescription.sdp.match(/a=ice-ufrag:(.*)/)[1];
             a.pc.restartIce();
@@ -61,12 +69,12 @@ app.whenReady().then(async () => {
             // Fault injection exercises the real PeerLink fail-closed observer; it is
             // not evidence that native sockets are bound to an interface.
             const read = a.stats.read.bind(a.stats);
-            a.stats.read = async pc => { const stats = await read(pc); if (stats.route) stats.route.localAddress = '203.0.113.250'; return stats; };
-            await a.readStats();
+            a.stats.read = async (pc, options) => { const stats = await read(pc, options); if (stats.route) stats.route.localAddress = '203.0.113.250'; return stats; };
+            await until(() => a.state === 'failed', 'Background route-only guard did not stop an unexpected IP');
             assert(a.state === 'failed' && a.pc.connectionState === 'closed', 'Unexpected local address must stop media');
             assert(a.diagnosis.summary.includes('203.0.113.250'), 'Failure must name the actual address');
           }
-          return { decodedVideo: true, matchingRoute: true, restart, guardChecked: checkGuard };
+          return { decodedVideo: true, liveBitrate: true, matchingRoute: true, restart, guardChecked: checkGuard };
         } finally { clearInterval(paint); stream.getTracks().forEach(t => t.stop()); a.close(); b.close(); }
       }
       return { initialAndRestart: await pair(true, true), reconnect: await pair(false, false), strictNativeBindingVerified: false };

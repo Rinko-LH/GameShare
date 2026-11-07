@@ -61,7 +61,8 @@ export interface VideoInbound {
   framesPerSecond: number;
   keyFramesDecoded: number;
   bytesReceived: number;
-  bitrateBps: number;
+  /** null 表示尚未取得两次有效采样；0 表示采样区间内没有流量。 */
+  bitrateBps: number | null;
   packetsLost: number;
   jitter: number;
   frameWidth: number;
@@ -73,7 +74,7 @@ export interface VideoOutbound {
   framesEncoded: number;
   framesPerSecond: number;
   bytesSent: number;
-  bitrateBps: number;
+  bitrateBps: number | null;
   /** 编码受限原因：none / cpu / bandwidth / other */
   qualityLimitationReason: string;
   frameWidth: number;

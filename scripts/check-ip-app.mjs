@@ -69,7 +69,14 @@ try {
   }
   await command('Page.enable');
   await command('Page.addScriptToEvaluateOnNewDocument', { source: `window.__testPCs = []; const BasePC = window.RTCPeerConnection; window.RTCPeerConnection = class extends BasePC { constructor(config) { super(config); window.__testPCs.push(this); } };` });
-  await evaluate('localStorage.removeItem("gs.connectionConfig"); localStorage.removeItem("gs.connectionMode"); localStorage.removeItem("gs.videoBitrateLimit"); localStorage.removeItem("gs.videoResolution"); location.reload(); true');
+  await command('Page.addScriptToEvaluateOnNewDocument', { source: `
+    window.__voiceCallbacks = new Set();
+    const voice = window.gameShare.voiceHotkey, subscribe = voice.onState, configure = voice.configure;
+    voice.onState = cb => { window.__voiceCallbacks.add(cb); const off = subscribe(cb); return () => { window.__voiceCallbacks.delete(cb); off(); }; };
+    voice.configure = async value => { const result = await configure(value); window.__voiceRevision = result.revision; return result; };
+    window.__testVoiceKey = pressed => window.__voiceCallbacks.forEach(cb => cb({pressed,error:null,revision:window.__voiceRevision}));
+  ` });
+  await evaluate('localStorage.removeItem("gs.connectionConfig"); localStorage.removeItem("gs.connectionMode"); localStorage.removeItem("gs.videoBitrateLimit"); localStorage.removeItem("gs.videoResolution"); localStorage.removeItem("gs.voiceSettings"); location.reload(); true');
   await until(() => evaluate('Array.isArray(window.__testPCs) && Boolean(document.querySelector(".connection-panel"))'), 'Unified connection page missing');
   assert.equal(await evaluate('Boolean(document.querySelector(".mode-chooser, .mode-card"))'), false);
   assert.equal(await evaluate('document.querySelector("[data-signaling]").options.length'), 3);
@@ -99,6 +106,31 @@ try {
   assert.ok(directAddress, 'A signaling adapter address is required');
   assert.equal(await evaluate('Boolean(document.querySelector(".diagnostics-panel"))'), false);
   assert.equal(await evaluate('Boolean(window.gameShare.diagnostics)'), false);
+  // Voice settings persist without automatically opening the user's microphone.
+  assert.equal(await evaluate('document.querySelector("[data-voice-mode=continuous]").getAttribute("aria-pressed")'), 'true');
+  await evaluate('document.querySelector("[data-voice-mode=push-to-talk]").click()');
+  assert.equal(await evaluate('document.querySelector("[data-voice-hold]").disabled'), true);
+  async function recordVoiceKey(code, modifiers = {}) {
+    await evaluate('document.querySelector("[data-voice-bind]").click()');
+    await until(() => evaluate('Boolean(document.querySelector("[data-voice-recorder]"))'), 'Voice key recorder missing');
+    await evaluate(`document.querySelector('[data-voice-recorder]').dispatchEvent(new KeyboardEvent('keydown', { code: ${JSON.stringify(code)}, ...${JSON.stringify(modifiers)}, bubbles: true }))`);
+  }
+  await recordVoiceKey('F4', { altKey: true });
+  assert.equal(await evaluate('document.querySelector("[data-voice-save]").disabled'), true, 'Reserved shortcut was accepted');
+  await evaluate('document.querySelector("[data-voice-recorder]").dispatchEvent(new KeyboardEvent("keydown", {code:"Escape",bubbles:true}))');
+  await recordVoiceKey('KeyV', { ctrlKey: true });
+  await evaluate('document.querySelector("[data-voice-save]").click()');
+  assert.match(await evaluate('document.querySelector("[data-voice-binding]").textContent'), /Ctrl.*V/);
+  await evaluate('document.querySelector("[data-voice-clear]").click()');
+  assert.equal(await evaluate('JSON.parse(localStorage.getItem("gs.voiceSettings")).binding'), null);
+  await recordVoiceKey('F8'); await evaluate('document.querySelector("[data-voice-save]").click()');
+  await evaluate('location.reload(); true');
+  await until(() => evaluate('document.querySelector("[data-voice-binding]")?.textContent === "F8"'), 'Voice binding did not restore');
+  assert.equal(await evaluate('document.querySelector("[data-voice-mode=push-to-talk]").getAttribute("aria-pressed")'), 'true');
+  const hotkey = await evaluate('window.gameShare.voiceHotkey.configure({active:true,binding:{code:"F8",ctrl:false,alt:false,shift:false}})');
+  assert.equal(hotkey.error, null, 'Native global key reader unavailable'); assert.equal(hotkey.pressed, false);
+  await evaluate('window.gameShare.voiceHotkey.configure({active:false,binding:null})');
+  console.log('PASS: voice modes, key recording/cancel/reserved combinations, clearing, persistence and native key reader');
   // Both signaling sources must support all media strategies without changing them.
   for (const signaling of ['ip', 'external']) for (const policy of ['internet-auto', 'local-auto', 'selected-ip-experimental']) {
     await role('host'); await selectConfig(signaling, policy);
@@ -187,6 +219,60 @@ try {
     return evaluate(`Array.from(document.querySelectorAll('[data-video-resolution]')).find(button => Number(button.dataset.videoResolution) === ${height})?.getAttribute('aria-checked') === 'true'`);
   }
   // Sender resolution is local and survives focus, float mode and restarts.
+  // Use a synthesized microphone for button tests, never the user's real device.
+  await evaluate(`Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { configurable: true, value: async () => {
+    const context = new AudioContext({sinkId:{type:'none'}}); const destination = context.createMediaStreamDestination();
+    const tone = context.createOscillator(); tone.connect(destination); tone.start(); await context.resume();
+    window.__voiceTestContext = context; window.__voiceTestTrack = destination.stream.getAudioTracks()[0]; return destination.stream;
+  } })`);
+  await evaluate('document.querySelector("[data-voice-enable]").click()');
+  await until(() => evaluate('Boolean(window.__voiceTestTrack)'), 'Synthetic microphone not started');
+  assert.equal(await evaluate('window.__voiceTestTrack.enabled'), false);
+  await sleep(100);
+  await evaluate('window.__testVoiceKey(true)'); assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true);
+  await evaluate('document.querySelector(".app__resizer__grip").click()');
+  await until(() => evaluate('!document.querySelector("[data-voice-panel]")'), 'Sidebar did not collapse');
+  assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true, 'Collapsing sidebar disabled global voice');
+  await evaluate('window.gameShare.windowControl.minimize()'); await sleep(150);
+  assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true, 'Minimize disabled global voice');
+  await evaluate('window.gameShare.windowControl.toggleMaximize()'); await sleep(150);
+  await command('Runtime.evaluate', {expression:'document.querySelector(".app__stage").requestFullscreen()',userGesture:true,awaitPromise:true});
+  assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true, 'Fullscreen disabled global voice');
+  await until(() => evaluate('document.querySelector(".stage__exit-fullscreen") && getComputedStyle(document.querySelector(".stage__exit-fullscreen")).visibility === "visible"'), 'Fullscreen exit button not shown');
+  assert.equal(await evaluate('(() => { const r=document.querySelector(".stage__exit-fullscreen").getBoundingClientRect(); return Math.abs((r.left+r.right)/2-innerWidth/2)<2 && r.top===16; })()'), true, 'Fullscreen exit button must be top centered');
+  await sleep(2300);
+  assert.equal(await evaluate('getComputedStyle(document.querySelector(".stage__exit-fullscreen")).visibility'), 'hidden', 'Fullscreen exit did not auto-hide after two seconds');
+  await command('Input.dispatchMouseEvent', {type:'mouseMoved',x:Math.round(await evaluate('innerWidth/2')),y:8});
+  await until(() => evaluate('getComputedStyle(document.querySelector(".stage__exit-fullscreen")).visibility === "visible"'), 'Moving to top must reveal exit button');
+  await evaluate('document.exitFullscreen()');
+  await evaluate('window.gameShare.windowMode.setEnabled(true)');
+  assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true, 'Floating mode disabled global voice');
+  await evaluate('window.gameShare.windowMode.setEnabled(false);window.__testVoiceKey(false)');
+  await until(() => evaluate('!window.__voiceTestTrack.enabled'), 'Global release did not mute');
+  if (await evaluate('!document.querySelector("[data-voice-panel]")')) await evaluate('document.querySelector(".app__resizer__grip").click()');
+  async function holdVoice() {
+    const point = await evaluate(`(() => { const b = document.querySelector('[data-voice-hold]'); b.scrollIntoView({block:'center'}); const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
+    await command('Input.dispatchMouseEvent', {type:'mousePressed',button:'left',buttons:1,clickCount:1,...point});
+    await until(() => evaluate('window.__voiceTestTrack.enabled'), 'Holding button did not open voice gate'); return point;
+  }
+  let voicePoint = await holdVoice();
+  await command('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',buttons:0,clickCount:1,...voicePoint});
+  await until(() => evaluate('!window.__voiceTestTrack.enabled'), 'Pointer release did not mute');
+  voicePoint = await holdVoice(); await evaluate('window.dispatchEvent(new Event("blur"))');
+  await until(() => evaluate('!window.__voiceTestTrack.enabled'), 'Window blur did not cancel button hold');
+  await command('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',buttons:0,clickCount:1,...voicePoint});
+  voicePoint = await holdVoice(); await evaluate('document.querySelector("#sidebar-tab-room").click()');
+  await until(() => evaluate('!window.__voiceTestTrack.enabled'), 'Changing tab did not cancel hold');
+  await command('Input.dispatchMouseEvent', {type:'mouseReleased',button:'left',buttons:0,clickCount:1,...voicePoint});
+  await evaluate('document.querySelector("#sidebar-tab-share").click();document.querySelector("[data-voice-mode=continuous]").click()');
+  await until(() => evaluate('window.__voiceTestTrack.enabled'), 'Continuous voice did not resume');
+  await evaluate('document.querySelector("[data-voice-mode=push-to-talk]").click()');
+  assert.equal(await evaluate('window.__voiceTestTrack.enabled'), false);
+  fs.writeFileSync(path.join(output, 'push-to-talk.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
+  await evaluate('document.querySelector("[data-voice-enable]").click()');
+  await until(() => evaluate('window.__voiceTestTrack.readyState === "ended"'), 'Mic off did not release device');
+  await evaluate('window.__voiceTestContext.close()');
+  console.log('PASS: actual voice UI hold/release, blur/tab cancellation, mode changes and true microphone release');
   await fill('[data-video-bitrate]', '1000000');
   assert.equal(await evaluate('document.querySelectorAll("[data-video-resolution]").length'), 3);
   assert.equal(await resolutionSelected(540), true);

@@ -1,4 +1,5 @@
 import { normalizeVideoBitrateLimit } from '../video-bitrate';
+import { readVoicePreferences, type VoiceMode } from '../voice-settings';
 import { DEFAULT_VIDEO_RESOLUTION, normalizeVideoResolution, qualityForResolution, type VideoResolution } from '../video-resolution';
 import {
   type PeerInfo,
@@ -134,6 +135,8 @@ export interface SessionState {
   audioFailure: AudioCaptureFailure | null;
   /** 麦克风是否正在采集。false 就是真的把设备释放了，不是静音 */
   micEnabled: boolean;
+  voiceMode: VoiceMode;
+  micTransmitting: boolean;
   /** 麦克风开启失败的原因；正常时为 null */
   micError: string | null;
   /** 麦克风实际生效的约束 —— AEC / NS / AGC 有没有真落下去就看它 */
@@ -195,6 +198,8 @@ const INITIAL_STATE: SessionState = {
   audioMode: null,
   audioFailure: null,
   micEnabled: false,
+  voiceMode: 'continuous',
+  micTransmitting: false,
   micError: null,
   micSettings: null,
   logs: [],
@@ -206,7 +211,9 @@ export class ShareSession {
   readonly mic = new MicCapture();
 
   #mesh: MeshManager | null = null;
-  #state: SessionState = INITIAL_STATE;
+  #state: SessionState = { ...INITIAL_STATE, voiceMode: readVoicePreferences().mode };
+  #micRequest = 0;
+  #voiceHeld = { button: false, keyboard: false };
   #listeners = new Set<() => void>();
   #unsubscribe: Array<() => void> = [];
   #serverUrl = DEFAULT_SIGNALING_URL;
@@ -279,6 +286,7 @@ export class ShareSession {
   #bindSignaling(): void {
     this.#unsubscribe = [
       this.signaling.on('state', (state, detail) => {
+        if (state === 'disconnected' || state === 'idle') this.#stopMic('连接断开');
         this.#patch({
           connection: {
             state,
@@ -487,6 +495,7 @@ export class ShareSession {
   }
 
   async leaveRoom(): Promise<void> {
+    this.#stopMic('离开房间');
     try {
       await this.signaling.leaveRoom();
     } finally {
@@ -754,21 +763,27 @@ export class ShareSession {
     }
     if (this.mic.live) return;
 
+    const request = ++this.#micRequest;
     try {
       const track = await this.mic.start();
+      if (request !== this.#micRequest) return;
+      // 按住模式先静音再挂轨，避免初始化时将真实声音发出去。
+      track.enabled = false;
       // 先挂轨再报状态：反过来会出现「界面说开着、实际还没挂上」的窗口
       this.#mesh?.setLocalTrack('voice', track);
       const settings = this.mic.settings;
       this.#patch({ micEnabled: true, micError: null, micSettings: settings });
+      this.#applyVoiceGate();
       this.pushLog(
         `麦克风已开启（回声消除=${yesNo(settings?.echoCancellation)}，` +
           `降噪=${yesNo(settings?.noiseSuppression)}，自动增益=${yesNo(settings?.autoGainControl)}）`,
       );
     } catch (err) {
+      if (request !== this.#micRequest) return;
       const message = err instanceof Error ? err.message : String(err);
       this.mic.stop();
       this.#mesh?.setLocalTrack('voice', null);
-      this.#patch({ micEnabled: false, micError: message, micSettings: null });
+      this.#patch({ micEnabled: false, micTransmitting: false, micError: message, micSettings: null });
       this.pushLog(`麦克风开启失败：${message}`);
       throw err;
     }
@@ -776,11 +791,39 @@ export class ShareSession {
 
   /** 关麦的内部实现：真正释放设备。所有「非用户主动」的关闭路径也走这里。 */
   #stopMic(reason: string): void {
-    if (!this.mic.live && !this.#state.micEnabled) return;
+    this.#micRequest++;
+    this.#voiceHeld = { button: false, keyboard: false };
+    const wasEnabled = this.mic.live || this.#state.micEnabled;
+    if (this.mic.track) this.mic.track.enabled = false;
     this.mic.stop();
     this.#mesh?.setLocalTrack('voice', null);
-    this.#patch({ micEnabled: false, micSettings: null });
-    this.pushLog(`麦克风已关闭（${reason}）`);
+    if (wasEnabled || this.#state.micTransmitting) this.#patch({ micEnabled: false, micTransmitting: false, micSettings: null });
+    if (wasEnabled) this.pushLog(`麦克风已关闭（${reason}）`);
+  }
+
+  setVoiceMode(mode: VoiceMode): void {
+    if (mode !== 'continuous' && mode !== 'push-to-talk') return;
+    this.#voiceHeld = { button: false, keyboard: false };
+    this.#patch({ voiceMode: mode });
+    this.#applyVoiceGate();
+  }
+
+  setVoiceHeld(source: 'button' | 'keyboard', held: boolean): void {
+    if (this.#state.voiceMode !== 'push-to-talk' || !this.#state.micEnabled || !this.#state.room) held = false;
+    this.#voiceHeld[source] = held;
+    this.#applyVoiceGate();
+  }
+
+  clearVoiceHolds(): void {
+    this.#voiceHeld = { button: false, keyboard: false };
+    this.#applyVoiceGate();
+  }
+
+  #applyVoiceGate(): void {
+    const transmitting = this.mic.live && this.#state.micEnabled &&
+      (this.#state.voiceMode === 'continuous' || Boolean(this.#state.room && (this.#voiceHeld.button || this.#voiceHeld.keyboard)));
+    if (this.mic.track) this.mic.track.enabled = transmitting;
+    if (this.#state.micTransmitting !== transmitting) this.#patch({ micTransmitting: transmitting });
   }
 
   /* ---------------- 应用声音（App Audio Track） ---------------- */
@@ -1002,7 +1045,7 @@ export class ShareSession {
     this.#unsubscribe = [];
     this.#teardownMesh();
     this.capture.stop();
-    this.mic.stop();
+    this.#stopMic('退出应用');
     this.signaling.disconnect();
     this.#listeners.clear();
   }

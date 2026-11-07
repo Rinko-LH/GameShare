@@ -367,7 +367,7 @@ export class PeerLink {
     this.#bind();
     if (this.#selectedMediaIp) {
       this.#log(`实验媒体 IP：${this.#selectedMediaIp}；未配置 STUN/TURN，候选限制不等于原生绑定`);
-      this.#mediaIpTimer = setInterval(() => { void this.readStats(); }, 500);
+      this.#mediaIpTimer = setInterval(() => { void this.readStats({ routeOnly: true }); }, 500);
     }
     this.#log(`链路创建 → ${opts.remotePeerId}（${this.#initiator ? '主动方' : '被动方'}）`);
   }
@@ -1310,7 +1310,7 @@ export class PeerLink {
     }
   }
 
-  async readStats(): Promise<LinkStats> {
+  async readStats(options: { routeOnly?: boolean } = {}): Promise<LinkStats> {
     // A captured window can resize without replacing its track. Recompute the
     // scale from its new dimensions while keeping the user's target unchanged.
     if (this.#videoResolution !== null) {
@@ -1319,7 +1319,7 @@ export class PeerLink {
       const height = this.#getSourceHeight() ?? track?.getSettings().height ?? null;
       if (height && (height !== this.#appliedSourceHeight || width !== this.#appliedSourceWidth)) await this.#applyQuality();
     }
-    const stats = await this.stats.read(this.pc);
+    const stats = await this.stats.read(this.pc, options);
     if (this.#selectedMediaIp && !this.#closed && this.pc.connectionState === 'connected') {
       const route = stats.route;
       const actual = route?.localAddress;

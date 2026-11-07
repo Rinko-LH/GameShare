@@ -44,6 +44,7 @@ export class MicCapture {
   #track: MediaStreamTrack | null = null;
   #failure: MicFailure | null = null;
   #starting = false;
+  #generation = 0;
   /** 设备被拔出时通知上层（与「用户主动关麦」区分开） */
   #onDeviceLost: (() => void) | null = null;
 
@@ -92,6 +93,7 @@ export class MicCapture {
     }
 
     this.#starting = true;
+    const generation = ++this.#generation;
     this.#failure = null;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -102,6 +104,11 @@ export class MicCapture {
         },
         video: false,
       });
+
+      if (generation !== this.#generation) {
+        stream.getTracks().forEach(track => track.stop());
+        throw new Error('麦克风开启已取消');
+      }
 
       const track = stream.getAudioTracks()[0];
       if (!track) {
@@ -126,15 +133,17 @@ export class MicCapture {
         name: err instanceof Error ? err.name : 'Error',
         message: describeMicError(err),
       };
-      this.#failure = failure;
+      if (generation === this.#generation) this.#failure = failure;
       throw new Error(failure.message);
     } finally {
-      this.#starting = false;
+      if (generation === this.#generation) this.#starting = false;
     }
   }
 
   /** 关麦：真正 stop 掉轨道并释放设备 */
   stop(): void {
+    this.#generation++;
+    this.#starting = false;
     if (this.#track) {
       try {
         this.#track.stop();

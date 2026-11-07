@@ -28,6 +28,8 @@
     "check:ip": "node scripts/check-ip-connect.mjs",
     "check:video-bitrate": "node scripts/check-video-bitrate-preferences.mjs && node scripts/run-electron.cjs scripts/check-video-bitrate.cjs",
     "check:video-resolution": "node scripts/check-video-resolution-preferences.mjs && node scripts/run-electron.cjs scripts/check-video-resolution.cjs",
+    "check:peer-stats": "node scripts/check-peer-stats.mjs",
+    "check:voice-ptt": "node scripts/check-voice-preferences.mjs && node scripts/run-electron.cjs scripts/check-voice-ptt.cjs",
     "check:connection-modes": "node scripts/check-connection-modes.mjs",
     "check:signaling-origin": "node scripts/check-signaling-origin.mjs",
     "check:mixed-media": "node scripts/run-electron.cjs scripts/check-mixed-media.cjs",

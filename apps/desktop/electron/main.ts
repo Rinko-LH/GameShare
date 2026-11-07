@@ -19,6 +19,7 @@ import {
   saveTurnCredentials,
 } from './turn-config';
 import { registerWindowModeHandlers, setPrimaryWindow } from './window-mode';
+import { registerVoiceHotkeyHandlers, setVoiceHotkeyHost } from './voice-hotkey';
 
 /**
  * 刻意不加 requestSingleInstanceLock()。
@@ -205,6 +206,7 @@ function createMainWindow(): BrowserWindow {
    * `activate` 分支会重建窗口，只注册一次的话第二个窗口就没人认得。
    */
   setPrimaryWindow(win);
+  setVoiceHotkeyHost(win);
   setTilesHostWindow(win);
 
   return win;
@@ -227,6 +229,7 @@ app.whenReady().then(() => {
   registerEmbeddedServerHandlers();
   registerTunnelHandlers();
   registerWindowModeHandlers();
+  registerVoiceHotkeyHandlers();
   registerFloatTilesHandlers();
   registerClipboardHandlers();
 

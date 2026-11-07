@@ -13,6 +13,8 @@ interface Sample {
   at: number;
   bytes: number;
   frames: number;
+  bitrateBps: number | null;
+  fps: number;
 }
 
 export class PeerStats {
@@ -23,7 +25,7 @@ export class PeerStats {
     this.#prev.clear();
   }
 
-  async read(pc: RTCPeerConnection): Promise<LinkStats> {
+  async read(pc: RTCPeerConnection, options: { routeOnly?: boolean } = {}): Promise<LinkStats> {
     let report: RTCStatsReport;
     try {
       report = await pc.getStats();
@@ -46,6 +48,9 @@ export class PeerStats {
     let inbound: VideoInbound | null = null;
     let outbound: VideoOutbound | null = null;
 
+    // IP 路径守卫只检查候选对，不消耗界面的码率采样区间。
+    if (options.routeOnly) return { inbound, outbound, route: this.#readRoute(byId) };
+
     for (const s of byId.values()) {
       if (s.type === 'inbound-rtp' && s.kind === 'video' && s.isRemote !== true) {
         inbound = this.#readInbound(s, codecs);
@@ -57,27 +62,30 @@ export class PeerStats {
     return { inbound, outbound, route: this.#readRoute(byId) };
   }
 
-  #diff(key: string, bytes: number, frames: number): { bitrateBps: number; fps: number } {
-    const now = Date.now();
+  #diff(key: string, bytes: number, frames: number, timestamp: unknown): { bitrateBps: number | null; fps: number } {
+    const now = typeof timestamp === 'number' && Number.isFinite(timestamp) ? timestamp : Date.now();
     const prev = this.#prev.get(key);
-    this.#prev.set(key, { at: now, bytes, frames });
-    if (!prev) return { bitrateBps: 0, fps: 0 };
+    // getStats 可能复用同一份报告；重复或乱序读取不能把有效速率抹为零。
+    if (prev && now <= prev.at) return { bitrateBps: prev.bitrateBps, fps: prev.fps };
+    if (!prev || bytes < prev.bytes || frames < prev.frames) {
+      this.#prev.set(key, { at: now, bytes, frames, bitrateBps: null, fps: 0 });
+      return { bitrateBps: null, fps: 0 };
+    }
 
     const dt = (now - prev.at) / 1000;
-    if (dt <= 0) return { bitrateBps: 0, fps: 0 };
-
-    return {
-      // 计数器可能因重新协商回退，负数一律归零
+    const measurement = {
       bitrateBps: Math.max(0, Math.round(((bytes - prev.bytes) * 8) / dt)),
       fps: Math.max(0, Math.round((frames - prev.frames) / dt)),
     };
+    this.#prev.set(key, { at: now, bytes, frames, ...measurement });
+    return measurement;
   }
 
   #readInbound(s: Record<string, unknown>, codecs: Map<string, string>): VideoInbound {
     const bytes = num(s.bytesReceived);
     const frames = num(s.framesDecoded);
-    const trackId = typeof s.trackIdentifier === 'string' ? s.trackIdentifier : String(s.id);
-    const diff = this.#diff(`in:${trackId}`, bytes, frames);
+    // 每条 RTP 统计分别采样，避免切源后同一 track 的不同 SSRC 相互覆盖。
+    const diff = this.#diff(`in:${String(s.id)}`, bytes, frames, s.timestamp);
 
     return {
       framesDecoded: frames,
@@ -98,7 +106,7 @@ export class PeerStats {
   #readOutbound(s: Record<string, unknown>, codecs: Map<string, string>): VideoOutbound {
     const bytes = num(s.bytesSent);
     const frames = num(s.framesEncoded);
-    const diff = this.#diff(`out:${String(s.id)}`, bytes, frames);
+    const diff = this.#diff(`out:${String(s.id)}`, bytes, frames, s.timestamp);
 
     return {
       framesEncoded: frames,
@@ -161,6 +169,12 @@ export class PeerStats {
       remoteAddress: str(remote?.address),
     };
   }
+}
+
+export function formatBitrate(bps: number | null): string {
+  if (bps === null || !Number.isFinite(bps) || bps < 0) return '—';
+  if (bps < 1_000_000) return `${Math.round(bps / 1000)} Kbps`;
+  return `${(bps / 1_000_000).toFixed(2)} Mbps`;
 }
 
 function num(value: unknown): number {
