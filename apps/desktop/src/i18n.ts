@@ -12,11 +12,11 @@
 export type Lang = 'zh' | 'en';
 
 const ZH = {
-  'share.resolutionLabel': '发送分辨率',
+  'share.resolutionLabel': '发送分辨率上限',
   'share.resolutionLow': '低档',
   'share.resolutionMedium': '中档',
   'share.resolutionHigh': '高档',
-  'share.resolutionHint': '统一控制你发给所有朋友的画面，放大与浮窗不改档位。按原比例缩放；源不足目标时不放大。',
+  'share.resolutionHint': '帧率优先：带宽或性能不足时可自动降低实际分辨率。统一应用到所有发送画面，放大与浮窗不改上限，源不足时不放大。采集源或网络受限时仍可能达不到所选帧率。',
   'sidebar.controls': '操作设置',
   'sidebar.room': '房间连接',
   'sidebar.share': '屏幕共享',
@@ -325,11 +325,11 @@ export type I18nKey = keyof typeof ZH;
 type Dict = Record<I18nKey, string>;
 
 const EN: Dict = {
-  'share.resolutionLabel': 'Send resolution',
+  'share.resolutionLabel': 'Send resolution limit',
   'share.resolutionLow': 'Low',
   'share.resolutionMedium': 'Medium',
   'share.resolutionHigh': 'High',
-  'share.resolutionHint': 'Applies to every outgoing video. Focus and floating windows do not change it. Preserves aspect ratio and never upscales a smaller source.',
+  'share.resolutionHint': 'Prioritizes frame rate: actual resolution may drop when bandwidth or performance is limited. Applies to every outgoing video. Focus and floating windows do not change the limit; smaller sources are never upscaled. Capture or network limits may still prevent the selected frame rate.',
   'view.fullscreen': 'Fullscreen',
   'view.mainViewHint': 'Show the shared screens in borderless fullscreen; use the floating exit button or press Esc to exit',
   'view.exitFullscreen': 'Exit fullscreen',

@@ -983,7 +983,7 @@ export class PeerLink {
   async #applyLocalTrack(role: TrackRole, track: MediaStreamTrack | null): Promise<void> {
     this.#localTracks[role] = track;
     if (role === 'video' && track) {
-      // 游戏内容提示；手动分辨率另由 maintain-resolution 参数维持。
+      // 游戏画面优先保持运动流畅；带宽或性能不足时允许编码器降低分辨率。
       try {
         track.contentHint = 'motion';
       } catch {
@@ -1265,14 +1265,15 @@ export class PeerLink {
       params.encodings[0].maxBitrate = maxBitrate;
       params.encodings[0].maxFramerate = maxFramerate;
       params.encodings[0].scaleResolutionDownBy = scaleDown;
-      if (this.#videoResolution !== null) params.degradationPreference = 'maintain-resolution';
+      // 所选分辨率限制发送尺寸，资源不足时优先保帧率，允许进一步降低实际尺寸。
+      if (this.#videoResolution !== null) params.degradationPreference = 'maintain-framerate';
       await sender.setParameters(params);
 
       this.#appliedQuality = profile.level;
       this.#appliedSourceWidth = sourceWidth;
       this.#appliedSourceHeight = sourceHeight;
       this.#log(
-        `画质 ${this.remotePeerId} → ${this.#videoResolution === null ? profile.label : `${this.#videoResolution}p（手动）`}（scaleDown=${scaleDown.toFixed(3)}，` +
+        `画质 ${this.remotePeerId} → ${this.#videoResolution === null ? profile.label : `${this.#videoResolution}p（上限，帧率优先）`}（scaleDown=${scaleDown.toFixed(3)}，` +
           `base=${sourceHeight ?? 'unknown'}p，fps≤${maxFramerate}，cap=${Math.round(maxBitrate / 1000)}k）`,
       );
     } catch (err) {

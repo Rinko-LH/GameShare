@@ -33,9 +33,10 @@ app.whenReady().then(async () => {
       sender.syncPeers(['z','a','b']); a.syncPeers(['a','z']); b.syncPeers(['b','z']);
       async function params(ids, target, sourceHeight, fps, cap) {
         const expected = Math.max(1, sourceHeight / target);
-        await until(() => ids.every(id => { const link = sender.getLink(id); const p = link?.readEncodingParams(); return p && Math.abs(p.scaleResolutionDownBy - expected) < 0.001 && p.maxFramerate === fps && (!cap || p.maxBitrate <= cap) && link.pc.getTransceivers().find(t => t.sender.track?.kind === 'video')?.sender.getParameters().degradationPreference === 'maintain-resolution'; }), 'Wrong sender parameters for ' + target + 'p/' + fps + 'fps');
+        await until(() => ids.every(id => { const link = sender.getLink(id); const p = link?.readEncodingParams(); return p && Math.abs(p.scaleResolutionDownBy - expected) < 0.001 && p.maxFramerate === fps && (!cap || p.maxBitrate <= cap) && link.pc.getTransceivers().find(t => t.sender.track?.kind === 'video')?.sender.getParameters().degradationPreference === 'maintain-framerate'; }), 'Wrong sender parameters or frame-rate priority for ' + target + 'p/' + fps + 'fps');
       }
-      async function decoded(viewer, height) { await until(async () => (await viewer.getLink('z').readStats()).inbound?.frameHeight === height, 'Decoded height did not reach ' + height); }
+      // 帧率优先允许实际尺寸低于所选档位；尺寸参数本身由 params() 精确检查。
+      async function decoded(viewer, height) { await until(async () => { const actual = (await viewer.getLink('z').readStats()).inbound?.frameHeight; return actual > 0 && actual <= height; }, 'Decoded height exceeded ' + height + ' or no video arrived'); }
       try {
         await until(() => ['a','b'].every(id => sender.getLink(id)?.state === 'connected'), 'Viewers did not connect');
         await params(['a','b'], 540, 1080, 30); await decoded(a, 540); await decoded(b, 540);
@@ -64,7 +65,7 @@ app.whenReady().then(async () => {
         sender.setLocalTrack('video',source(320,180)); await params(['a','b','c'],1080,180,60,1000000); await decoded(a,180);
         const audioAfter = link.pc.getTransceivers().slice(1).map(t => t.sender.getParameters().encodings?.map(e => e.maxBitrate ?? null));
         check(JSON.stringify(audioBefore) === JSON.stringify(audioAfter),'Audio parameters changed');
-        return { decoded3605401080:true, allViewers:true, remoteRequestsIgnored:true, independentFps:true, bitrateCap:true, liveSourceResize:true, sourceReplacement:true, noUpscale:true, lateViewer:true, iceRestart:true, reconnect:true, audioUnchanged:true };
+        return { decodedWithin3605401080Limits:true, frameRatePriority:true, allViewers:true, remoteRequestsIgnored:true, independentFps:true, bitrateCap:true, liveSourceResize:true, sourceReplacement:true, noUpscale:true, lateViewer:true, iceRestart:true, reconnect:true, audioUnchanged:true };
       } finally { clearInterval(paint); tracks.forEach(t => t.stop()); meshes.forEach(m => m.close()); }
     })()`);
     console.log('PASS: manual video resolution runtime checks', JSON.stringify(result));
