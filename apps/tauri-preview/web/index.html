@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GameShare · Tauri 技术预览</title>
+    <link rel="stylesheet" href="preview.css">
+    <script type="module" src="host.js"></script>
+  </head>
+  <body>
+    <main class="host">
+      <h1>GameShare 技术预览</h1>
+      <p>打开三个独立置顶浮窗。每个窗口接收一路本机 WebRTC 测试视频，并显示实时帧率和最长帧间隔。</p>
+      <div class="actions">
+        <button id="start" type="button">打开三路浮窗</button>
+        <button id="minimize" type="button" disabled>最小化主窗口</button>
+        <button id="stop" type="button" disabled>关闭全部浮窗</button>
+      </div>
+      <p id="status" role="status">等待开始</p>
+      <p class="muted">测试使用本机生成的画面，无需创建房间或连接服务器。</p>
+    </main>
+  </body>
+</html>

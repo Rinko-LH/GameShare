@@ -1,0 +1,5 @@
+{
+  "identifier": "preview",
+  "windows": ["main", "tile-0", "tile-1", "tile-2"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}
