@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod signaling;
+mod tunnel;
 mod voice;
 
 use serde_json::{json, Value};
@@ -67,6 +68,9 @@ async fn open_tile(
         ))
         .inner_size(360.0, 225.0)
         .min_inner_size(220.0, 145.0)
+        .decorations(false)
+        .shadow(false)
+        .background_color(tauri::window::Color(0, 0, 0, 255))
         .position(
             50.0 + 375.0 * (slot % 3) as f64,
             92.0 + 255.0 * (slot / 3) as f64,
@@ -155,6 +159,7 @@ fn app_info(window: WebviewWindow) -> Result<Value, String> {
 fn main() {
     tauri::Builder::default()
         .manage(signaling::Signaling::default())
+        .manage(tunnel::Tunnel::default())
         .manage(voice::VoiceHotkey::default())
         .setup(|app| {
             let window = &app.config().app.windows[0];
@@ -176,6 +181,8 @@ fn main() {
             app_info,
             signaling::set_signaling,
             signaling::signaling_status,
+            tunnel::tunnel_status,
+            tunnel::set_tunnel,
             voice::configure_voice_hotkey
         ])
         .on_page_load(|view, payload| {

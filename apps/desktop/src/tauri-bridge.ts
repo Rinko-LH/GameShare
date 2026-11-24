@@ -1,4 +1,4 @@
-import type { GameShareApi } from './types/global';
+import type { GameShareApi, TunnelStatus } from './types/global';
 import { TauriTiles } from './tauri-tiles';
 
 import { listenNative, native } from './tauri-native';
@@ -8,6 +8,10 @@ export async function installTauriBridge(): Promise<void> {
   if (!window.__TAURI__ || new URLSearchParams(location.search).has('floatTile')) return;
   const tiles = new TauriTiles();
   await tiles.initialize();
+  const tunnelListeners = new Set<(status: TunnelStatus) => void>();
+  await listenNative<TunnelStatus>('tunnel-status', 'main', (status) => {
+    for (const callback of tunnelListeners) callback(status);
+  });
   const control = (action: string) => void native('control_window', { action }).catch(console.error);
   window.gameShare = {
     runtime: 'tauri',
@@ -35,6 +39,14 @@ export async function installTauriBridge(): Promise<void> {
       getStatus: () => native('signaling_status'),
       setEnabled: (enabled) => native('set_signaling', { enabled }),
       onStatus: () => () => undefined,
+    },
+    tunnel: {
+      getStatus: () => native('tunnel_status'),
+      setEnabled: (enabled) => native('set_tunnel', { enabled }),
+      onStatus(callback) {
+        tunnelListeners.add(callback);
+        return () => tunnelListeners.delete(callback);
+      },
     },
     getAppInfo: () => native('app_info'),
     clipboard: {

@@ -9,6 +9,7 @@ import { io } from 'socket.io-client';
 
 if (!process.argv[2]) throw new Error('Usage: node apps/tauri/tests/check-client.mjs <gameshare-tauri.exe>');
 const exe = path.resolve(process.argv[2]);
+const useCloudflare = process.argv.includes('--cloudflare');
 const electronArg = process.argv.find((argument) => argument.startsWith('--electron='));
 const electronExe = electronArg && path.resolve(electronArg.slice('--electron='.length));
 const profiles = path.resolve(import.meta.dirname, '../../../.cache/tauri-client-check', randomUUID());
@@ -128,9 +129,24 @@ try {
   assert.ok(stoppedVoice.revision > voice.revision);
   const networks = await hostEval('window.gameShare.server.getStatus()');
   assert.equal(networks.state, 'stopped', 'Test requires a fresh Tauri server');
-  const address = networks.lanUrls[0] ?? networks.publicV4Urls[0] ?? networks.publicV6Urls[0];
+  let address = networks.lanUrls[0] ?? networks.publicV4Urls[0] ?? networks.publicV6Urls[0];
   assert.ok(address, 'Test requires a non-loopback adapter');
-  await fill(hostEval, '[data-room-address=local]', address);
+  await fill(hostEval, '[data-signaling]', useCloudflare ? 'cloudflare' : 'ip');
+  await fill(hostEval, '[data-media-policy]', 'local-auto');
+  if (useCloudflare) {
+    // Public smoke tests must never forward to a different instance already on port 8080.
+    const local = await hostEval('window.gameShare.server.setEnabled(true)');
+    assert.equal(local.state, 'running', 'Public smoke test must own the local test server');
+    const tunnel = await hostEval(`(() => {
+      window.__tunnelStates = [];
+      window.gameShare.tunnel.onStatus(status => window.__tunnelStates.push(status.state));
+      return window.gameShare.tunnel.getStatus();
+    })()`);
+    assert.equal(tunnel.state, 'stopped');
+    assert.equal(tunnel.available, true);
+  } else {
+    await fill(hostEval, '[data-room-address=local]', address);
+  }
   await clickText(hostEval, '创建房间');
   let room;
   try {
@@ -159,9 +175,45 @@ try {
   const wrongRoom = await observer.timeout(3000).emitWithAck('join-room', { roomCode: 'bad', nickname: 'observer' });
   assert.equal(wrongRoom.error.code, 'ROOM_NOT_FOUND');
 
-  const invitation = 'GS3.' + Buffer.from(JSON.stringify({
-    server: address, room, signaling: 'ip', mediaPolicy: 'local-auto',
-  })).toString('base64');
+  let invitation;
+  if (useCloudflare) {
+    let lastDetail;
+    const tunnel = await until(async () => {
+      const next = await hostEval('window.gameShare.tunnel.getStatus()');
+      if (next.detail && next.detail !== lastDetail) {
+        lastDetail = next.detail;
+        console.log(next.detail);
+      }
+      return ['running', 'failed'].includes(next.state) && next;
+    }, 'Cloudflare downloaded and verified the public origin', 215000);
+    if (tunnel.state !== 'running') {
+      await hostEval('window.gameShare.tunnel.setEnabled(false)');
+      assert.equal(await hostEval('window.gameShare.tunnel.getStatus().then(s => s.state)'), 'stopped');
+      throw new Error(tunnel.detail);
+    }
+    assert.match(tunnel.url, /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/);
+    address = tunnel.url;
+    // "running" already means the native client verified the public health endpoint.
+    // The guest WebViews below exercise the actual public Socket.IO connection.
+    await hostEval(`window.gameShare.clipboard.writeText = async text => { window.__copiedInvite = text; return true; }`);
+    await until(async () => {
+      try { await clickText(hostEval, '复制邀请'); } catch { return false; }
+      return hostEval('!!window.__copiedInvite');
+    }, 'copy the public invitation');
+    invitation = await hostEval('window.__copiedInvite');
+    const encoded = invitation.match(/GS3\.([a-zA-Z0-9+/_=-]+)/)?.[1];
+    assert.ok(encoded);
+    const decoded = JSON.parse(Buffer.from(encoded, 'base64').toString());
+    assert.equal(decoded.server, address);
+    assert.equal(decoded.room, room);
+    assert.equal(decoded.signaling, 'cloudflare');
+    assert.deepEqual(await hostEval('[...new Set(window.__tunnelStates)]'), ['starting', 'running']);
+    console.log('PASS: Cloudflare Quick Tunnel ready, verified health, invitation contains the public address');
+  } else {
+    invitation = 'GS3.' + Buffer.from(JSON.stringify({
+      server: address, room, signaling: 'ip', mediaPolicy: 'local-auto',
+    })).toString('base64');
+  }
   const guests = [];
   for (let i = 1; i <= 3; i += 1) {
     const guest = await launch(`guest-${i}`, i === 3 && Boolean(electronExe));
@@ -223,9 +275,21 @@ try {
   console.log('PASS: native float windows, peer identity, mute and continued playback while minimized', fps);
   await clickText(guests[0].evaluate, '停止共享');
   await until(async () => (await host.list()).filter((entry) => entry.url.includes('floatTile=')).length === 2, 'stopping share removed only the matching float window');
+  const remaining = (await host.list()).find((entry) => entry.url.includes('floatTile='));
+  const float = await attach(remaining);
+  await float('document.querySelector(\'.tilewin__bar button[aria-label="关闭"]\').click()');
+  await until(async () => (await host.list()).filter((entry) => entry.url.includes('floatTile=')).length === 1, 'close button removed only its own float window');
   await hostEval('window.gameShare.windowMode.setEnabled(false)');
   await until(async () => !(await host.list()).some((entry) => entry.url.includes('floatTile=')), 'disabling float mode closed all float windows');
-  console.log('PASS: stopping share and disabling float mode cleaned up the windows');
+  console.log('PASS: stopping share, closing one float, and disabling float mode cleaned up the windows');
+  if (useCloudflare) {
+    await hostEval('window.gameShare.server.setEnabled(false)');
+    const stopped = await hostEval('window.gameShare.tunnel.getStatus()');
+    assert.equal(stopped.enabled, false);
+    assert.equal(stopped.state, 'stopped');
+    assert.equal(stopped.url, null);
+    console.log('PASS: disabling local signaling closed the Cloudflare tunnel');
+  }
 } finally {
   stopping = true;
   observer?.disconnect();

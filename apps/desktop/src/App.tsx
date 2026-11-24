@@ -137,7 +137,7 @@ export default function App() {
   const t = useI18n();
 
   const isTauri = window.gameShare?.runtime === 'tauri';
-  const [connectionConfig, setConnectionConfig] = useState<ConnectionConfig>(() => readConnectionConfig(isTauri));
+  const [connectionConfig, setConnectionConfig] = useState<ConnectionConfig>(readConnectionConfig);
   const [selectedMediaIp, setSelectedMediaIp] = useState('');
   const [pendingInvitation, setPendingInvitation] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -1713,7 +1713,7 @@ export default function App() {
 
                           <p className="hint hint--dim">
                             {t(TUNNEL_STATE_LABEL[tunnel.state])}
-                            {tunnel.state === 'starting' && t('tunnel.startingHint')}
+                            {tunnel.state === 'starting' && !tunnel.detail && t('tunnel.startingHint')}
                           </p>
                           {tunnel.detail && <p className="hint hint--warn">{tunnel.detail}</p>}
 

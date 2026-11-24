@@ -2122,3 +2122,6 @@ body {
 .tile__route-details { overflow-wrap: anywhere; }
 
 .tilewin__video { object-fit: contain; background: #000; }
+
+.tilewin--tauri .tilewin__bar { padding-right: 20px; }
+.tilewin--tauri:focus-within .tilewin__bar { opacity: 1; pointer-events: auto; }

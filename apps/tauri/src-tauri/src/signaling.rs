@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::{State, WebviewWindow};
+use tauri::{Manager, State, WebviewWindow};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -510,6 +510,23 @@ fn loopback_url(dual: bool) -> String {
     format!("http://{host}:{PORT}")
 }
 
+impl Signaling {
+    pub async fn loopback_origin(&self) -> Option<String> {
+        let own = self
+            .0
+            .lock()
+            .await
+            .as_ref()
+            .filter(|server| !server.task.is_finished())
+            .map(|server| loopback_url(server.dual));
+        if own.is_some() {
+            own
+        } else {
+            existing_origin().await
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn signaling_status(
     window: WebviewWindow,
@@ -536,8 +553,16 @@ pub async fn set_signaling(
     window: WebviewWindow,
     state: State<'_, Signaling>,
     enabled: bool,
+    tunnel: State<'_, super::tunnel::Tunnel>,
 ) -> Result<Value, String> {
     super::require_main(&window)?;
+    let _tunnel_control = if enabled {
+        None
+    } else {
+        let mut control = tunnel.control().await;
+        control.stop(window.app_handle()).await;
+        Some(control)
+    };
     let mut server = state.0.lock().await;
     let local = loopback_url(false);
     if !enabled {

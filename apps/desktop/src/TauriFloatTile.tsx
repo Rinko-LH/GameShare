@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { getLang, subscribeLang, t } from './i18n';
-import { listenNative } from './tauri-native';
+import { listenNative, native } from './tauri-native';
 import { localTileDescription, sendTileSignal, type TileSignal } from './tauri-tiles';
 
 export default function TauriFloatTile({ label }: { label: string }) {
@@ -56,7 +56,11 @@ export default function TauriFloatTile({ label }: { label: string }) {
     };
   }, [label]);
 
-  return <div className={`tilewin${playing ? '' : ' tilewin--idle'}`} data-tile-index={label}
+  return <div className={`tilewin tilewin--tauri${playing ? '' : ' tilewin--idle'}`} data-tile-index={label}
+    onMouseDown={(event) => {
+      if (event.button !== 0 || (event.target as HTMLElement).closest('.tilewin__bar, .tilewin__grip')) return;
+      void native('plugin:window|start_dragging').catch(console.error);
+    }}
     onPointerEnter={() => setHovering(true)} onPointerLeave={() => setHovering(false)}>
     <video ref={video} className="tilewin__canvas tilewin__video" muted autoPlay playsInline
       onPlaying={() => setPlaying(true)} onEmptied={() => setPlaying(false)} />
@@ -78,6 +82,14 @@ export default function TauriFloatTile({ label }: { label: string }) {
         onClick={() => void sendTileSignal(label, { kind: 'mute' }).catch(console.error)}>
         {muted ? t('tileFloat.muted') : t('tileFloat.live')}
       </button>
+      <button type="button" className="tilewin__mute" aria-label={t('win.close')} title={t('win.close')}
+        onClick={() => void native('plugin:window|close').catch(console.error)}>×</button>
     </div>
+    <div className={`tilewin__grip${hovering ? ' tilewin__grip--on' : ''}`} title={t('tileFloat.gripTitle')}
+      onMouseDown={(event) => {
+        if (event.button !== 0) return;
+        event.stopPropagation();
+        void native('plugin:window|start_resize_dragging', { value: 'SouthEast' }).catch(console.error);
+      }} />
   </div>;
 }
