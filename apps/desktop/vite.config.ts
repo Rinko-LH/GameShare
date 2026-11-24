@@ -1,7 +1,7 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   // Electron 生产环境用 file:// 加载 dist/index.html，
   // 必须用相对路径，否则资源会解析到盘符根目录。
@@ -16,8 +16,8 @@ export default defineConfig({
     strictPort: true,
   },
   build: {
-    outDir: 'dist',
+    outDir: mode === 'tauri' ? 'dist-tauri' : 'dist',
     emptyOutDir: true,
     sourcemap: true,
   },
-});
+}));

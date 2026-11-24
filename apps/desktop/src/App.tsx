@@ -136,7 +136,8 @@ export default function App() {
   const state = useSyncExternalStore(session.subscribe, session.getState);
   const t = useI18n();
 
-  const [connectionConfig, setConnectionConfig] = useState<ConnectionConfig>(readConnectionConfig);
+  const isTauri = window.gameShare?.runtime === 'tauri';
+  const [connectionConfig, setConnectionConfig] = useState<ConnectionConfig>(() => readConnectionConfig(isTauri));
   const [selectedMediaIp, setSelectedMediaIp] = useState('');
   const [pendingInvitation, setPendingInvitation] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -1302,12 +1303,24 @@ export default function App() {
     if (!splitActive) return;
     const api = window.gameShare?.floatTiles;
     if (!api) return;
-    void api.syncPeers(inRoom ? tilePeersPayload() : []).then(setTiles);
-  }, [splitActive, inRoom, tilePeersPayload]);
+    void api.syncPeers(inRoom ? tilePeersPayload() : []).then(setTiles)
+      .catch(error => session.pushLog(ShareSession.describeError(error)));
+  }, [splitActive, inRoom, tilePeersPayload, session]);
+
+  useEffect(() => {
+    const update = window.gameShare?.floatTiles.setVideoTracks;
+    if (!update) return;
+    const tracks = new Map<string, MediaStreamTrack>();
+    for (const [peerId, stream] of Object.entries(remoteStreams)) {
+      const track = stream.getVideoTracks()[0];
+      if (track) tracks.set(peerId, track);
+    }
+    update(tracks);
+  }, [remoteStreams]);
 
   // 浮窗只消费远端视频轨道，主窗口的播放元素不参与取帧。
   useEffect(() => {
-    if (!splitActive) return undefined;
+    if (isTauri || !splitActive) return undefined;
     const list = tilesRef.current?.tiles ?? [];
     const stops: Array<() => void> = [];
 
@@ -1348,7 +1361,7 @@ export default function App() {
     return () => {
       for (const stop of stops) stop();
     };
-  }, [splitActive, tileKey, tileEpoch, remoteStreams, session]);
+  }, [isTauri, splitActive, tileKey, tileEpoch, remoteStreams, session]);
 
   /**
    * 窗口是否最大化 —— 只用来决定顶栏那个按钮画「□」还是「❐」。
@@ -1394,7 +1407,11 @@ export default function App() {
         selfPeerId={room?.self.peerId}
       />
       <header className="app__header">
-        <div className="app__title">
+        <div className="app__title"
+          onPointerDown={isTauri ? (event) => {
+            if (event.button === 0) window.gameShare?.windowControl.startDragging?.();
+          } : undefined}
+          onDoubleClick={isTauri ? () => window.gameShare?.windowControl.toggleMaximize() : undefined}>
           <span className="app__logo">◧</span>
           <div>
             <h1>GameShare</h1>
@@ -1428,7 +1445,7 @@ export default function App() {
                   ? fmt('float.hotkeyTitle', {
                       hotkey: floatWindow.hotkey.replace('Control+Alt+', 'Ctrl+Alt+'),
                     })
-                  : t('float.hotkeyTakenTitle')
+                  : isTauri ? undefined : t('float.hotkeyTakenTitle')
               }
             >
               <input
@@ -1441,7 +1458,7 @@ export default function App() {
               {floatWindow.hotkeyAvailable ? (
                 <span className="tag">{floatWindow.hotkey.replace('Control+Alt+', 'Ctrl+Alt+')}</span>
               ) : (
-                <span className="tag tag--warn">{t('float.hotkeyConflict')}</span>
+                !isTauri && <span className="tag tag--warn">{t('float.hotkeyConflict')}</span>
               )}
             </label>
           )}
@@ -1531,7 +1548,7 @@ export default function App() {
             </div>}
           </div>
           <div className="sidebar-content">
-          {isFloat && floatWindow && <section className="panel panel--tight">
+          {isFloat && floatWindow && !isTauri && <section className="panel panel--tight">
             <h2>{t('float.mode')}</h2>
             <label className="view-opacity"><span>{t('view.opacity')}</span>
               <input aria-label={t('view.opacity')} type="range" min={Math.round(floatWindow.minOpacity * 100)} max={100} step={5} value={Math.round(floatWindow.opacity * 100)} onChange={(e) => void handleOpacity(Number(e.target.value) / 100)} />
@@ -2018,14 +2035,14 @@ export default function App() {
                     <p className="audio-failure__title">{t('audioFail.title')}</p>
                     <p className="hint hint--dim">{audioFailure.message}</p>
                     <div className="row">
-                      <button
+                      {!isTauri && <button
                         type="button"
                         className="btn"
                         disabled={busy}
                         onClick={() => changeAudioMode('system')}
                       >
                         {t('audioFail.toSystem')}
-                      </button>
+                      </button>}
                       <button
                         type="button"
                         className="btn btn--ghost"
@@ -2062,10 +2079,10 @@ export default function App() {
                   <button
                     type="button"
                     className="btn btn--ghost"
-                    onClick={() => void toggleSourcePicker()}
+                    onClick={() => void (isTauri ? pickSource('webview-display') : toggleSourcePicker())}
                     disabled={busy}
                   >
-                    {pickerOpen ? t('share.pickHide') : t('share.pickMore')}
+                    {isTauri ? '重新选择要共享的窗口或屏幕' : pickerOpen ? t('share.pickHide') : t('share.pickMore')}
                   </button>
                 </div>
 
@@ -2073,7 +2090,7 @@ export default function App() {
                     （画面会闪一下）。屏幕源没有所属进程，选它会自动落回「全部电脑」。 */}
                 <div className="row row--modes" role="radiogroup" aria-label={t('share.modeAria')}>
                   <span className="hint hint--dim">{t('share.modeLabel')}</span>
-                  {UI_AUDIO_MODES.map(({ mode, label, title }) => (
+                  {UI_AUDIO_MODES.filter(({ mode }) => !isTauri || mode !== 'system').map(({ mode, label, title }) => (
                     <button
                       key={mode}
                       type="button"
@@ -2109,7 +2126,7 @@ export default function App() {
                 {resolutionControl}
                 {bitrateControl}
 
-                {pickerOpen && sourceError && <p className="hint hint--warn">{sourceError}</p>}
+                {(pickerOpen || isTauri) && sourceError && <p className="hint hint--warn">{sourceError}</p>}
                 {pickerOpen && sourceList}
                 {pickerOpen && sources.length === 0 && !sourceError && (
                   <p className="hint hint--dim">{t('share.noSources')}</p>
@@ -2119,7 +2136,7 @@ export default function App() {
               <>
                 <div className="row row--modes" role="radiogroup" aria-label={t('share.modeAria')}>
                   <span className="hint hint--dim">{t('share.modeLabel')}</span>
-                  {UI_AUDIO_MODES.map(({ mode, label, title }) => (
+                  {UI_AUDIO_MODES.filter(({ mode }) => !isTauri || mode !== 'system').map(({ mode, label, title }) => (
                     <button
                       key={mode}
                       type="button"
@@ -2133,7 +2150,7 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                <p className="hint hint--dim">{t('share.modeDefaultHint')}</p>
+                <p className="hint hint--dim">{isTauri ? '窗口声音由 WebView2 共享面板提供。如果面板没有声音选项，仍可共享画面。' : t('share.modeDefaultHint')}</p>
 
                 {/* 未共享时也可预设帧率：只记偏好，startShare 时应用 */}
                 <div className="row row--modes" role="radiogroup" aria-label={t('share.fpsAria')}>
@@ -2157,10 +2174,10 @@ export default function App() {
                   <button
                     type="button"
                     className="btn"
-                    onClick={() => void refreshSources()}
+                    onClick={() => void (isTauri ? pickSource('webview-display') : refreshSources())}
                     disabled={!inRoom}
                   >
-                    {t('share.enumerate')}
+                    {isTauri ? '选择要共享的窗口或屏幕' : t('share.enumerate')}
                   </button>
                   <button
                     type="button"

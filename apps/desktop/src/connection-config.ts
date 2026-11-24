@@ -34,15 +34,18 @@ export function saveConnectionConfig(config: ConnectionConfig): void {
   try { localStorage.setItem('gs.connectionConfig', JSON.stringify(config)); } catch { /* Current selection still applies. */ }
 }
 
-export function readConnectionConfig(): ConnectionConfig {
+export function readConnectionConfig(tauri = false): ConnectionConfig {
+  const defaults: ConnectionConfig = tauri
+    ? { signaling: 'ip', mediaPolicy: 'local-auto' }
+    : DEFAULT_CONNECTION_CONFIG;
   try {
     const stored = localStorage.getItem('gs.connectionConfig');
     if (stored !== null) {
-      try { return parseConnectionConfig(JSON.parse(stored)) ?? { ...DEFAULT_CONNECTION_CONFIG }; }
-      catch { return { ...DEFAULT_CONNECTION_CONFIG }; }
+      try { return parseConnectionConfig(JSON.parse(stored)) ?? { ...defaults }; }
+      catch { return { ...defaults }; }
     }
     const migrated = configFromLegacyMode(localStorage.getItem('gs.connectionMode'));
     if (migrated) { saveConnectionConfig(migrated); return migrated; }
   } catch { /* Storage may be unavailable. */ }
-  return { ...DEFAULT_CONNECTION_CONFIG };
+  return { ...defaults };
 }

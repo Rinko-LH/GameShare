@@ -1,0 +1,5 @@
+{
+  "identifier": "desktop",
+  "windows": ["main", "tile-*"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

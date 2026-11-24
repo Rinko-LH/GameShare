@@ -46,6 +46,7 @@ export function ConnectionPanel(props: Props) {
   const { signaling, mediaPolicy } = props.config;
   const selectedIp = mediaPolicy === 'selected-ip-experimental';
   const cloud = signaling === 'cloudflare';
+  const unavailableHostTunnel = props.role === 'host' && cloud && window.gameShare?.runtime === 'tauri';
   const addresses = [...new Set([...(props.server?.lanUrls ?? []), ...(props.server?.publicV4Urls ?? []), ...(props.server?.publicV6Urls ?? [])])];
   const shownError = parsed?.error ?? error ?? props.connectionError;
   const signalingInfo = SIGNALING_METHODS.find(item => item.value === signaling)!;
@@ -53,7 +54,7 @@ export function ConnectionPanel(props: Props) {
   const bareIpJoin = signaling === 'ip' && mediaPolicy === 'local-auto';
 
   async function connect() {
-    if (locked) return;
+    if (locked || unavailableHostTunnel) return;
     setError(null); props.onConnectionError(null); props.onBusy(true);
     const create = props.role === 'host';
     if (create) props.onCreatingRoom(true);
@@ -148,7 +149,8 @@ export function ConnectionPanel(props: Props) {
       </details>}
       {!props.joined && <>
         <p className="hint hint--dim">{props.role === 'host' ? cloud ? '创建房间后等待临时网址就绪，再从顶部复制邀请发给朋友。' : '创建房间后从顶部复制邀请，朋友粘贴后会自动读取上述两项配置。' : '邀请只传连接要求，不会复制房主的本机媒体 IP。'}</p>
-        <button className="btn btn--primary" type="submit" disabled={locked || (selectedIp && !props.mediaIp) || (props.role === 'guest' && (Boolean(parsed?.error) || (!invitation.trim() && !address.trim())))}>{props.busy ? '正在连接…' : props.role === 'host' ? '创建房间' : '连接并加入'}</button>
+        {unavailableHostTunnel && <p className="hint hint--warn">当前 Tauri 版可用 IP 直连或自备外网地址创建房间，也可以加入使用 Cloudflare 邀请的房间。</p>}
+        <button className="btn btn--primary" type="submit" disabled={locked || unavailableHostTunnel || (selectedIp && !props.mediaIp) || (props.role === 'guest' && (Boolean(parsed?.error) || (!invitation.trim() && !address.trim())))}>{props.busy ? '正在连接…' : props.role === 'host' ? '创建房间' : '连接并加入'}</button>
       </>}
     </form>
     {props.joined && <p className="hint">房间已连接，配置已锁定。到“屏幕共享”选择画面；修改网络配置需先离开房间。</p>}
@@ -156,7 +158,9 @@ export function ConnectionPanel(props: Props) {
       <p className="hint">{props.tunnel?.state === 'running' ? '邀请网址已准备好，可从顶部复制。' : props.tunnel?.state === 'failed' || props.tunnel?.state === 'stopped' ? '临时入口未就绪，请重试。' : '正在准备临时邀请网址…'}</p>
       {props.tunnel?.detail && <p className="hint hint--warn">{props.tunnel.detail}</p>}
       {(props.tunnel?.state === 'failed' || props.tunnel?.state === 'stopped') && <button type="button" className="btn" disabled={props.busy} onClick={() => {
-        props.onBusy(true); void window.gameShare?.tunnel.setEnabled(true).then(props.onTunnel).catch(err => setError(ShareSession.describeError(err))).finally(() => props.onBusy(false));
+        const tunnel = window.gameShare?.tunnel;
+        if (!tunnel) return;
+        props.onBusy(true); void tunnel.setEnabled(true).then(props.onTunnel).catch(err => setError(ShareSession.describeError(err))).finally(() => props.onBusy(false));
       }}>重新准备邀请网址</button>}
     </>}
     <details className="connection-help"><summary>连接失败，下一步检查什么？</summary><ol>

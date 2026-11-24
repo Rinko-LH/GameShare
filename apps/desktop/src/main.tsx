@@ -18,8 +18,22 @@ if (!container) {
  * 页面重载、热更新、多开客户端都不会认错 —— 而认错的后果是把小窗渲染成一整个
  * 客户端界面，且它会跟着去连信令。
  */
-const isFloatTile = new URLSearchParams(window.location.search).has('floatTile');
+const floatTile = new URLSearchParams(window.location.search).get('floatTile');
 
-createRoot(container).render(
-  <StrictMode>{isFloatTile ? <FloatTile /> : <App />}</StrictMode>,
-);
+async function render(root: HTMLElement) {
+  if (import.meta.env.MODE === 'tauri') {
+    if (floatTile !== null) {
+      const { default: TauriFloatTile } = await import('./TauriFloatTile');
+      createRoot(root).render(<TauriFloatTile label={floatTile} />);
+      return;
+    }
+    const { installTauriBridge } = await import('./tauri-bridge');
+    await installTauriBridge();
+  }
+  createRoot(root).render(<StrictMode>{floatTile !== null ? <FloatTile /> : <App />}</StrictMode>);
+}
+
+void render(container).catch((error: unknown) => {
+  console.error(error);
+  container.textContent = `GameShare 启动失败：${String(error)}`;
+});

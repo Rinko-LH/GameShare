@@ -208,6 +208,7 @@ export class CaptureManager {
   /* ---------------- 真实捕获 ---------------- */
 
   async startDisplay(sourceId: string, options: StartDisplayOptions = {}): Promise<MediaStream> {
+    if (window.gameShare?.runtime === 'tauri') return this.#startWebViewDisplay(options);
     const api = window.gameShare?.capture;
     if (!api) throw new CaptureError('当前不在 Electron 环境，无法采集屏幕');
 
@@ -281,6 +282,47 @@ export class CaptureManager {
     const track = stream.getVideoTracks()[0];
     const name = track?.label || sourceId;
     this.#adopt(stream, name);
+    return stream;
+  }
+
+  async #startWebViewDisplay(options: StartDisplayOptions): Promise<MediaStream> {
+    const requestAudio = options.audioMode === 'application' ||
+      (options.audioMode === undefined && options.withAudio === true);
+    const mode: AudioCaptureMode = requestAudio ? 'application' : 'none';
+    let stream: MediaStream;
+    try {
+      // 调用必须发生在用户点击之后、任何异步 IPC 之前。WebView2 自己处理选源和授权。
+      const constraints: DisplayMediaStreamOptions & { windowAudio: string; systemAudio: string } = {
+        video: { frameRate: 120 },
+        audio: requestAudio
+          ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+          : false,
+        systemAudio: 'exclude',
+        windowAudio: requestAudio ? 'window' : 'exclude',
+      };
+      stream = await navigator.mediaDevices.getDisplayMedia(constraints);
+    } catch (error) {
+      throw new CaptureError(`获取画面失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const track = stream.getVideoTracks()[0];
+    if (!track) {
+      for (const track of stream.getTracks()) track.stop();
+      throw new CaptureError('选中的共享源未返回视频');
+    }
+    // 浏览器选项是提示。仅保留窗口共享返回的声音，避免整机音频回灌。
+    if (!requestAudio || track.getSettings().displaySurface !== 'window') {
+      for (const audio of stream.getAudioTracks()) {
+        stream.removeTrack(audio);
+        audio.stop();
+      }
+    }
+    this.stop();
+    this.#lastAudioMode = mode;
+    this.#audioError = requestAudio && stream.getAudioTracks().length === 0
+      ? '当前共享源未提供窗口声音。画面已共享。' : null;
+    this.#audioFailure = this.#audioError
+      ? { message: this.#audioError, failedMode: mode, suggestion: null } : null;
+    this.#adopt(stream, track.label || '屏幕共享');
     return stream;
   }
 

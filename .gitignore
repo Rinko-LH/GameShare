@@ -17,3 +17,4 @@ _probe.js
 scripts/_probe-clipboard.cjs
 # 诊断脚本自己的输出
 diag-*.log
+dist-tauri/

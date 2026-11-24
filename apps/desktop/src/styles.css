@@ -2120,3 +2120,5 @@ body {
    那是「bar 自己靠 hover 才浮出来」时代的产物，已经跟着一起删掉了 */
 
 .tile__route-details { overflow-wrap: anywhere; }
+
+.tilewin__video { object-fit: contain; background: #000; }

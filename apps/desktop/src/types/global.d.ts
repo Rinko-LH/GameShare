@@ -6,10 +6,10 @@ import type { VoiceHotkeyConfig, VoiceHotkeyStatus } from '../voice-settings';
 
 export interface AppInfo {
   appVersion: string;
-  electron: string;
-  chrome: string;
-  node: string;
-  v8: string;
+  electron?: string;
+  chrome?: string;
+  node?: string;
+  v8?: string;
   platform: string;
   arch: string;
   userDataPath: string;
@@ -242,7 +242,8 @@ export interface GameShareTileApi {
 }
 
 export interface GameShareApi {
-  voiceHotkey: {
+  runtime?: 'tauri';
+  voiceHotkey?: {
     configure(config: VoiceHotkeyConfig): Promise<VoiceHotkeyStatus>;
     onState(callback: (status: VoiceHotkeyStatus) => void): () => void;
   };
@@ -259,7 +260,7 @@ export interface GameShareApi {
   clipboard: {
     writeText(text: string): Promise<boolean>;
   };
-  capture: {
+  capture?: {
     listSources(): Promise<CaptureSourceInfo[]>;
     /**
      * 把「采哪个源、要不要声音、要哪一种声音」交给主进程。
@@ -292,7 +293,7 @@ export interface GameShareApi {
     setEnabled(enabled: boolean): Promise<EmbeddedServerStatus>;
     onStatus(callback: (status: EmbeddedServerStatus) => void): () => void;
   };
-  tunnel: {
+  tunnel?: {
     getStatus(): Promise<TunnelStatus>;
     setEnabled(enabled: boolean): Promise<TunnelStatus>;
     onStatus(callback: (status: TunnelStatus) => void): () => void;
@@ -302,7 +303,7 @@ export interface GameShareApi {
    * 只有 `create` 在「建出来了但没存住」这一种情况下会带出明文，
    * 因为 Cloudflare 的 key 只在创建时返回一次，接口拿不回来。
    */
-  turn: {
+  turn?: {
     get(): Promise<TurnUiStatus>;
     create(accountId: string, apiToken: string): Promise<TurnCreateResult>;
     save(keyId: string, keySecret: string): Promise<TurnSaveResult>;
@@ -333,6 +334,7 @@ export interface GameShareApi {
    * （见 main.ts 里 frame 那段），所以这三个按钮由界面自己画。
    */
   windowControl: {
+    startDragging?(): void;
     minimize(): void;
     toggleMaximize(): void;
     close(): void;
@@ -347,6 +349,7 @@ export interface GameShareApi {
    * 搬过去 —— `ipcRenderer` 的结构化克隆搬不了 `ImageBitmap`。
    */
   floatTiles: {
+    setVideoTracks?(tracks: ReadonlyMap<string, MediaStreamTrack>): void;
     onVolumeRequest(callback: (data: { peerId: string; volume: number }) => void): () => void;
     getStatus(): Promise<FloatTilesStatus>;
     /**
