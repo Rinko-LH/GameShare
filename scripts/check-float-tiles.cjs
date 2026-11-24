@@ -24,18 +24,17 @@
  *      置顶 / 不可最小化…）、建窗参数（含初始静音状态）、主窗口被收成控制条、
  *      换人不重建窗口且身份送达、清单变短关掉多余的、静音双向、尺寸回流、
  *      用户直接关窗后的状态、透明度、合并与还原。
- *   2. **帧泵组** —— 三路带颜色的合成视频源 → 抽帧 → `ImageBitmap` → MessagePort
+ *   2. **帧泵组** —— 三路带颜色的合成视频源 → 生产帧泵 → `ImageBitmap` → MessagePort
  *      → 三个小窗各自画布。断言**每个小窗画出来的是自己那一路的颜色**（串台检测）
- *      且三路都在 30fps 附近。
+ *      且主窗口最小化前后，三路都在 30fps 附近。
  *   3. **静态断言组** —— 几条「改错了就静默失效」的写法，就地正则盯着。
  *
  * ⚠️ **没覆盖的**：真实对端的视频流、渲染层（App.tsx）里那套接线、鼠标真拖小窗、
  * 以及「小窗能不能压在无边框全屏游戏上面」（那一条归 `npm run check:topmost`）。
- * 帧泵组是**复刻**实现，不是直接跑 App.tsx 里那一份 —— 所以第 3 组必须存在：
- * 实现漂移了要能把这边从绿变红。
  *
  * 用法：
  *   npm run check:tiles
+ *   npm run check:tiles -- --pump-only
  *
  * ⚠️ 会真的开一批窗口（约 15 秒）然后自动关掉。跑的时候别抢鼠标。
  * 用的是独立的 userData 目录，**不会碰你自己那份小窗位置记录**。
@@ -222,6 +221,14 @@ const CONSUMER_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>c
 <style>html,body{margin:0;background:#000}canvas{display:block}</style></head><body>
 <canvas id="c" width="8" height="8"></canvas><script>
 window.__stats = { frames: 0, fps: 0, color: null, meta: null, bytes: 0 };
+var sampleStart = 0;
+var lastFrame = 0;
+var maxGap = 0;
+window.__startSample = () => {
+  sampleStart = lastFrame = performance.now();
+  maxGap = 0;
+};
+window.__maxGap = () => Math.max(maxGap, performance.now() - lastFrame);
 window.__onPumpPort = function (port, meta) {
   window.__stats.meta = meta;
   var canvas = document.getElementById('c');
@@ -238,6 +245,10 @@ window.__onPumpPort = function (port, meta) {
     window.__stats.color = [px[0], px[1], px[2]];
     window.__stats.bytes = bmp.width * bmp.height;
     var now = performance.now();
+    if (sampleStart > 0) {
+      maxGap = Math.max(maxGap, now - lastFrame);
+      lastFrame = now;
+    }
     times.push(now);
     if (times.length > 31) times.shift();
     window.__stats.frames += 1;
@@ -292,43 +303,17 @@ COLORS.forEach(function (rgb, i) {
 window.__ready = function () {
   return videos.filter(function (v) { return v.videoWidth > 0; }).length;
 };
-/**
- * 帧泵。**这一段是 App.tsx 里那份的复刻** —— 第 3 组会用正则盯住几个关键写法，
- * 免得实现改了这边还在绿。
- */
-window.__posted = 0;
+var stops = [];
+window.__pumpErrors = [];
 window.__onPumpPort = function (port, meta) {
-  var video = document.getElementById('v' + meta.col);
-  if (!video) return;
-  var canvas = document.createElement('canvas');
-  var ctx = canvas.getContext('2d', { alpha: false });
-  var handle = 0;
-  var inFlight = false;
-  var cancelled = false;
-  var pump = function () {
-    if (cancelled) return;
-    handle = video.requestVideoFrameCallback(pump);
-    if (inFlight) return;
-    var srcW = video.videoWidth;
-    var srcH = video.videoHeight;
-    if (srcW === 0 || srcH === 0) return;
-    // 与 float-tiles.ts 的默认小窗尺寸一致（脚本开头会断言它没漂）
-    var scale = Math.min(360 / srcW, 203 / srcH, 1);
-    var w = Math.max(2, Math.round(srcW * scale));
-    var h = Math.max(2, Math.round(srcH * scale));
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-    ctx.drawImage(video, 0, 0, w, h);
-    inFlight = true;
-    createImageBitmap(canvas).then(function (bmp) {
-      inFlight = false;
-      if (cancelled) { bmp.close(); return; }
-      window.__posted += 1;
-      port.postMessage({ bmp: bmp }, [bmp]);
-    }).catch(function () { inFlight = false; });
-  };
-  handle = video.requestVideoFrameCallback(pump);
-  window.__cancelPump = function () { cancelled = true; video.cancelVideoFrameCallback(handle); };
+  var track = videos[meta.col].srcObject.getVideoTracks()[0];
+  stops.push(window.floatTilePump.startFloatTilePump(
+    track, port,
+    () => ({ width: 360, height: 203 }),
+    (error) => window.__pumpErrors.push(String(error)),
+  ));
 };
+window.__cancelPump = () => stops.forEach((stop) => stop());
 </script></body></html>`;
 
 /** 收通道用的 preload（复刻 `preload-tile.ts` 的做法：拿到 port 直接挂到 window 上） */
@@ -484,11 +469,11 @@ async function groupLoad() {
     [TILE_WIDTH, BAR_WIDTH, BAR_HEIGHT, BAR_MARGIN].every((n) => Number.isFinite(n)),
     `小窗宽 ${TILE_WIDTH}（高按 16:9 = ${TILE_HEIGHT}）/ 控制条 ${BAR_WIDTH}x${BAR_HEIGHT} 留白 ${BAR_MARGIN}`,
   );
-  // 帧泵组那份复刻里把目标框写死成 360x203，盯住它别跟实现漂移
+  // 帧泵组使用 360x203 作为目标框，与默认浮窗尺寸对齐。
   check(
-    '帧泵复刻用的目标框与实现的默认尺寸一致',
+    '帧泵测试目标框与默认浮窗尺寸一致',
     TILE_WIDTH === 360 && TILE_HEIGHT === 203,
-    `实现 ${TILE_WIDTH}x${TILE_HEIGHT} vs 复刻 360x203`,
+    `默认浮窗 ${TILE_WIDTH}x${TILE_HEIGHT}，测试目标框 360x203`,
   );
 
   const ft = require(path.join(WORK, 'float-tiles.cjs'));
@@ -827,7 +812,7 @@ async function groupLoad() {
 }
 
 /* ------------------------------------------------------------------ *
- * 第 2 组：帧泵（复刻实现，验通道隔离与帧率）
+ * 第 2 组：帧泵（验通道隔离与最小化前后的帧率）
  * ------------------------------------------------------------------ */
 
 const SOURCE_COLORS = [
@@ -856,6 +841,15 @@ async function groupPump() {
     webPreferences: { preload, contextIsolation: false, nodeIntegration: false, sandbox: false },
   });
   await source.loadURL(page(SOURCE_PAGE));
+  const { buildSync } = require('esbuild');
+  const pump = buildSync({
+    entryPoints: [path.join(DESKTOP, 'src', 'media', 'float-tile-pump.ts')],
+    bundle: true,
+    format: 'iife',
+    globalName: 'floatTilePump',
+    write: false,
+  }).outputFiles[0].text;
+  await source.webContents.executeJavaScript(pump);
 
   const consumers = [];
   for (let i = 0; i < 3; i += 1) {
@@ -892,7 +886,6 @@ async function groupPump() {
   for (const win of consumers) {
     stats.push(JSON.parse(await win.webContents.executeJavaScript('JSON.stringify(window.__stats)')));
   }
-  const posted = await source.webContents.executeJavaScript('window.__posted');
 
   check(
     '每一路小窗都收到了帧',
@@ -921,15 +914,38 @@ async function groupPump() {
     stats.every((s) => s.bytes > 0 && s.bytes <= 360 * 203),
     stats.map((s) => `${s.bytes}px`).join(' '),
   );
-  check('源侧确实在持续发帧', posted > 60, `共发出 ${posted} 帧`);
+  async function checkPlayback(state, changeWindowState) {
+    const before = await Promise.all(
+      consumers.map((win) => win.webContents.executeJavaScript(
+        'window.__startSample(); window.__stats.frames',
+      )),
+    );
+    changeWindowState();
+    const duration = 3200;
+    await sleep(duration);
+    const samples = await Promise.all(
+      consumers.map((win) => win.webContents.executeJavaScript(
+        '({ frames: window.__stats.frames, maxGap: window.__maxGap() })',
+      )),
+    );
+    const fps = samples.map(({ frames }, index) => (frames - before[index]) * 1000 / duration);
+    const isMinimized = state === '最小化';
+    check(
+      `主窗口${state}后，三个小窗持续收到新帧（≥24fps）`,
+      source.isMinimized() === isMinimized && fps.every((rate) => rate >= 24),
+      fps.map((rate) => `${rate.toFixed(1)}fps`).join(' '),
+    );
+    check(
+      `主窗口${state}后，三个小窗的最长帧间隔均小于 250ms`,
+      samples.every(({ maxGap }) => maxGap < 250),
+      samples.map(({ maxGap }) => `${Math.round(maxGap)}ms`).join(' '),
+    );
+  }
 
-  /* 这里曾经量过一条「源窗口压到收起态尺寸（152x40）后仍在出帧」，**已经删掉**。
-     反向验证时它红不了：把源页那三个 `<video>` 改成 `display:none`（比缩小彻底得多），
-     帧率照样是满的 —— `requestVideoFrameCallback` 不看元素的可见性，
-     所以那条断言抓不到任何东西，留着就是一条「永远绿」的假保障。（同一条结论
-     第 3 组也记着：主窗口那层画面用 `opacity: 0` 收掉是**保守选择**，不是实测需要。）
-     真正会静默失效的是「实现把那层画面从收起态里拿掉」——小窗全黑且不报错，
-     那一条归第 3 组的静态断言（盯 `hostbar__videos` 的位置）。 */
+  await checkPlayback('最小化', () => source.minimize());
+  await checkPlayback('还原', () => source.restore());
+  const errors = await source.webContents.executeJavaScript('window.__pumpErrors');
+  check('生产帧泵未报错', errors.length === 0, errors.join(' | '));
 
   await source.webContents.executeJavaScript('window.__cancelPump && window.__cancelPump()').catch(() => {});
   for (const win of consumers) win.destroy();
@@ -950,21 +966,7 @@ function groupStatic() {
   const tilePreload = read('apps/desktop/electron/preload-tile.ts');
   const css = read('apps/desktop/src/styles.css');
 
-  check(
-    '帧泵按源的节奏走（requestVideoFrameCallback），不是按刷新率',
-    app.includes('requestVideoFrameCallback') &&
-      !/const pump[\s\S]{0,600}requestAnimationFrame/.test(app),
-  );
-  check(
-    '每路一张自己的画布（共用会互相覆盖成别人的帧）',
-    /for \(const tile of list\)[\s\S]*?document\.createElement\('canvas'\)/.test(app),
-  );
-  check(
-    '位图按「不放大」缩放（拖大靠小窗自己拉，不把图放大）',
-    app.includes('Math.min(box.width / srcW, box.height / srcH, 1)'),
-  );
-  check('位图走 transfer list 而不是拷贝', app.includes('port.postMessage({ bmp: bitmap }, [bitmap])'));
-  check('帧泵同时只允许一帧在途', app.includes('inFlight'));
+  check('主窗口用远端视频轨道启动浮窗帧泵', app.includes('startFloatTilePump(track, port'));
 
   check(
     '小窗关闭上下文隔离（MessagePort 过不了 contextBridge）',
@@ -2048,14 +2050,18 @@ async function groupCollapse() {
 
 async function main() {
   await prepare();
-  await groupLoad();
-  await groupPump();
-  await groupDrag();
-  await groupSplitOverFloat();
-  await groupCollapse();
-  await groupFloatMenu();
-  await groupClipboard();
-  groupStatic();
+  if (process.argv.includes('--pump-only')) {
+    await groupPump();
+  } else {
+    await groupLoad();
+    await groupPump();
+    await groupDrag();
+    await groupSplitOverFloat();
+    await groupCollapse();
+    await groupFloatMenu();
+    await groupClipboard();
+    groupStatic();
+  }
 
   console.log(`\n${failed === 0 ? `✓ 通过（${passed} 项）` : `✗ ${failed} 项未通过`}\n`);
   // .cache 留着：下次跑不用重新打包。它在 .gitignore 里，也不会被 electron-builder 收走。

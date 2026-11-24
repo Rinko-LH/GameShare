@@ -18,6 +18,7 @@ import type {
 import type { LinkStats, RemoteTracks } from './rtc/types';
 import { formatBitrate } from './rtc/stats';
 import type { LinkDiagnosis } from './rtc/PeerLink';
+import { startFloatTilePump } from './media/float-tile-pump';
 import { ShareSession } from './session/ShareSession';
 import { ConnectionPanel } from './ConnectionPanel';
 import { VoicePanel, useVoiceHotkey } from './VoicePanel';
@@ -183,7 +184,7 @@ export default function App() {
    */
   const [tiles, setTiles] = useState<FloatTilesStatus | null>(null);
 
-  /** 主窗口画面区；独立浮窗时保留隐藏视频层供帧泵取帧。 */
+  /** 主窗口画面区，用于切换全屏。 */
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [stageFullscreen, setStageFullscreen] = useState(false);
   const [fullscreenExitVisible, setFullscreenExitVisible] = useState(false);
@@ -1126,13 +1127,6 @@ export default function App() {
       peerId={peer.peerId}
       title={peer.nickname}
       stream={remoteStreams[peer.peerId] ?? null}
-      /**
-       * 把 `<video>` 注册给拆分模式的帧泵。
-       *
-       * 不加条件：反正只有拆分模式下帧泵才会跑，而多注册一份没有任何代价。
-       * 少写一个判断，也少一个「哪个分支忘了传」的出错点。
-       */
-      onVideoEl={videoElRef(peer.peerId)}
       linkState={links[peer.peerId]?.state ?? 'new'}
       detail={links[peer.peerId]?.detail}
       diagnosis={links[peer.peerId]?.diagnosis}
@@ -1177,10 +1171,10 @@ export default function App() {
    *
    *   1. 告诉主进程「对端有谁」—— 顺序即位置，小窗按序号对号入座；
    *   2. **当帧泵**：小窗拿不到媒体轨道（`MediaStreamTrack` 不是可转移对象，
-   *      过不了进程边界，实测见 float-tiles.ts 顶部），画面只能由主窗口从自己的
-   *      `<video>` 里抽帧、缩放成 `ImageBitmap`、经 MessagePort 搬过去。
+   *      过不了进程边界，实测见 float-tiles.ts 顶部），由主窗口从远端视频轨道
+   *      读取帧，缩放成 `ImageBitmap` 后经 MessagePort 发送给浮窗。
    *
-   * 主窗口隐藏视频预览但持续解码和播放音频，独立小窗只显示视频帧。
+   * 主窗口播放音频并传送视频帧，独立小窗显示接收到的视频帧。
    * 主窗口关闭时必须关闭全部小窗；离房或停止共享时按清单清理。
    * ------------------------------------------------------------------ */
 
@@ -1212,7 +1206,7 @@ export default function App() {
     : '';
 
   /**
-   * 帧泵用的三张表。
+   * 帧泵用的两张表。
    *
    * 全部放 ref 不放 state：帧泵每帧都要读它们，而它们的变化（小窗被拖大改尺寸、
    * 通道被重建）来得频繁、又完全不影响界面 —— 进 state 只是白白重渲染整个客户端。
@@ -1221,36 +1215,15 @@ export default function App() {
    *   走 MessagePort 的 transfer list 才能零拷贝搬过去**，`ipcRenderer` 的结构化
    *   克隆搬不了 DOM 对象。
    * - `tileSizeRef`：小窗客户区的像素尺寸，帧泵按它缩放。
-   * - `videoElsRef`：对端 id → 主窗口里那个 `<video>`。帧泵就是从这里抽帧的。
    */
   const tilePortsRef = useRef<Map<number, MessagePort>>(new Map());
   const tileSizeRef = useRef<Map<number, { width: number; height: number }>>(new Map());
-  const videoElsRef = useRef<Map<string, HTMLVideoElement>>(new Map());
 
   /**
    * 通道比小窗清单晚到 —— 小窗得先把页面加载起来，主进程才会建通道。
    * 这个计数器就是「新通道到了」的信号，用来把帧泵叫醒。
    */
   const [tileEpoch, setTileEpoch] = useState(0);
-
-  /**
-   * `VideoTile` 的 `<video>` 注册入口，按对端缓存一份。
-   *
-   * **必须缓存**：每次渲染都新建一个函数的话，React 会在每次渲染时先拿旧函数
-   * 回调一次 `null`、再用新函数回调元素；帧泵恰好在这个窗口期读 `videoElsRef`
-   * 就会读到空的 —— 表现是「小窗全是黑的，但什么都不报错」，最难查的那一类。
-   */
-  const videoElRefs = useRef<Map<string, (el: HTMLVideoElement | null) => void>>(new Map());
-  const videoElRef = useCallback((peerId: string) => {
-    const cached = videoElRefs.current.get(peerId);
-    if (cached) return cached;
-    const callback = (el: HTMLVideoElement | null): void => {
-      if (el) videoElsRef.current.set(peerId, el);
-      else videoElsRef.current.delete(peerId);
-    };
-    videoElRefs.current.set(peerId, callback);
-    return callback;
-  }, []);
 
   /**
    * 订阅小窗状态与画面通道。
@@ -1332,35 +1305,16 @@ export default function App() {
     void api.syncPeers(inRoom ? tilePeersPayload() : []).then(setTiles);
   }, [splitActive, inRoom, tilePeersPayload]);
 
-  /**
-   * 帧泵：把主窗口里每一路的画面按小窗的尺寸抽帧送过去。
-   *
-   * 几处不能随便改的地方：
-   *
-   * - **按源的节奏走**（`requestVideoFrameCallback`），不按屏幕刷新率。用
-   *   `requestAnimationFrame` 驱动会在 60Hz 屏上把同一帧重复发两遍，白烧一倍带宽
-   *   —— 这个坑在探测脚本里踩过，量出来是假的「120fps」。
-   * - **缩放到小窗的实际像素、且不放大**（`Math.min(..., 1)`）。小窗被拖大之后
-   *   是它自己把整幅画面拉满，仍然清晰 —— 因为每帧都是从源的分辨率重新缩的，
-   *   而不是把一张已经缩小过的图放大。窗口比例与画面比例不一致时留黑边
-   *   （由小窗那侧居中补齐），**不把画面拉变形**：看游戏时变形比黑边难受得多。
-   * - **同时只允许一帧在途**：`createImageBitmap` 是异步的，不拦着的话源一快
-   *   就会堆起一串待处理的位图。
-   * - 通道按**序号**记；小窗页面一重载主进程就会重连通道，所以每轮都从 ref 里
-   *   取最新那条（`tileEpoch` 就是干这个用的）。
-   */
+  // 浮窗只消费远端视频轨道，主窗口的播放元素不参与取帧。
   useEffect(() => {
     if (!splitActive) return undefined;
     const list = tilesRef.current?.tiles ?? [];
-    if (list.length === 0) return undefined;
-
     const stops: Array<() => void> = [];
 
     for (const tile of list) {
-      const video = videoElsRef.current.get(tile.peerId);
+      const track = remoteStreams[tile.peerId]?.getVideoTracks()[0];
       const port = tilePortsRef.current.get(tile.index);
-      // 小窗刚建出来时通道还没到，等 tileEpoch 变化后重建这一轮
-      if (!video || !port) continue;
+      if (!track || !port) continue;
 
       /**
        * 端口必须是**真端口**。
@@ -1378,69 +1332,23 @@ export default function App() {
         continue;
       }
 
-      // 每个小窗一张画布。**不能共用**：`createImageBitmap` 读的是画布当前的内容，
-      // 共用的话几个泵会互相覆盖，画出来的可能是别人的帧（而且是偶发的那种）。
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d', { alpha: false });
-      if (!ctx) continue;
-
-      let cancelled = false;
-      let handle = 0;
-      let inFlight = false;
-
-      const pump = (): void => {
-        if (cancelled) return;
-        // 先把下一帧排上再干活：源是 30fps、下面这段最多几毫秒，不会因此漏帧；
-        // 反过来（干完再排）一旦某帧超时就会连丢两帧。
-        handle = video.requestVideoFrameCallback(pump);
-        if (inFlight) return;
-
-        const srcW = video.videoWidth;
-        const srcH = video.videoHeight;
-        if (srcW === 0 || srcH === 0) return;
-
-        // 尺寸优先用渲染层报上来的客户区尺寸；还没报就用主进程记的窗口尺寸；
-        // 两个都没有才退回源尺寸（这时按原分辨率搬，偏大但不会错）
-        const reported = tileSizeRef.current.get(tile.index);
-        const box =
-          reported ?? (tile.width > 0 && tile.height > 0 ? tile : { width: srcW, height: srcH });
-        const scale = Math.min(box.width / srcW, box.height / srcH, 1);
-        const width = Math.max(2, Math.round(srcW * scale));
-        const height = Math.max(2, Math.round(srcH * scale));
-        if (canvas.width !== width || canvas.height !== height) {
-          canvas.width = width;
-          canvas.height = height;
-        }
-        ctx.drawImage(video, 0, 0, width, height);
-
-        inFlight = true;
-        void createImageBitmap(canvas)
-          .then((bitmap) => {
-            inFlight = false;
-            if (cancelled) {
-              bitmap.close();
-              return;
-            }
-            // 转移、不是拷贝：位图在 transfer list 里零拷贝过去，本地这份随即作废
-            port.postMessage({ bmp: bitmap }, [bitmap]);
-          })
-          .catch(() => {
-            inFlight = false;
-          });
+      const getSize = () =>
+        tileSizeRef.current.get(tile.index) ??
+        (tile.width > 0 && tile.height > 0 ? tile : undefined);
+      const onError = (error: unknown) => {
+        session.pushLog(`第 ${tile.index + 1} 路浮窗取帧失败：${String(error)}`);
       };
-
-      handle = video.requestVideoFrameCallback(pump);
-      stops.push(() => {
-        cancelled = true;
-        video.cancelVideoFrameCallback(handle);
-      });
+      try {
+        stops.push(startFloatTilePump(track, port, getSize, onError));
+      } catch (error) {
+        onError(error);
+      }
     }
 
     return () => {
       for (const stop of stops) stop();
     };
-    // `session` 稳定（useState 初值），进依赖只是为了上面那条「端口不可用」的日志
-  }, [splitActive, tileKey, tileEpoch, session]);
+  }, [splitActive, tileKey, tileEpoch, remoteStreams, session]);
 
   /**
    * 窗口是否最大化 —— 只用来决定顶栏那个按钮画「□」还是「❐」。
@@ -2430,13 +2338,6 @@ interface VideoTileProps {
   onToggleVolPanel?: () => void;
   focused?: boolean;
   onToggleFocus?: () => void;
-  /**
-   * 元素挂载/卸载时把 `<video>` 交出去。
-   *
-   * 拆分模式的帧泵要从这个元素上抽帧（小窗拿不到媒体轨道，画面只能由主窗口搬），
-   * 而帧泵是 React 之外的一个定时循环、拿不到组件内部的 ref —— 只能从这里交出去。
-   */
-  onVideoEl?: (el: HTMLVideoElement | null) => void;
   variant: TileVariant;
 }
 
@@ -2458,7 +2359,6 @@ function VideoTile({
   onToggleVolPanel,
   focused,
   onToggleFocus,
-  onVideoEl,
   variant,
 }: VideoTileProps) {
   const t = useI18n();
@@ -2479,21 +2379,6 @@ function VideoTile({
    * 没有角色表时（本地预览，以及 ontrack 还没到的那一小段）退回老行为：
    * 由 `<video>` 直接播整条流，至少保证「听得见」。
    */
-
-  /**
-   * 元素同时交给内部 ref 和外面（帧泵）。
-   *
-   * 用**回调 ref** 而不是在 effect 里上报：帧泵的 effect 与本组件的 effect 在同一批
-   * 里跑，谁先谁后取决于 React 的调用顺序 —— 而回调 ref 在 commit 阶段就调过了，
-   * 「帧泵启动时元素还没交出去」这个竞争窗口根本不存在。
-   */
-  const attach = useCallback(
-    (el: HTMLVideoElement | null): void => {
-      ref.current = el;
-      onVideoEl?.(el);
-    },
-    [onVideoEl],
-  );
 
   useEffect(() => {
     const video = ref.current;
@@ -2544,7 +2429,7 @@ function VideoTile({
         —— 不静的话同一路声音会被播两遍，听感上是一个极短的叠音。
       */}
       <video
-        ref={attach}
+        ref={ref}
         className="tile__video"
         autoPlay
         playsInline

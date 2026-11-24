@@ -19,7 +19,7 @@ import path from 'node:path';
  * `MediaStreamTrack` 与 `MediaStream` 都不是可转移对象（Chromium 只在实验特性里支持）。
  * 所以每个小窗**拿不到媒体对象**，只能由主窗口把画面「搬」过去：
  *
- *     video（主窗口里放着，出声音）→ drawImage 缩放到小窗尺寸
+ *     远端视频轨道 → MediaStreamTrackProcessor 读取帧 → drawImage 缩放到小窗尺寸
  *       → createImageBitmap → MessagePort 转移 → 小窗 canvas 绘制
  *
  * 成本实测（`scripts/_probe-frame-pipe.cjs`，3 路 720p@30fps 并发）：
