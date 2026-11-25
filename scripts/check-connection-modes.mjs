@@ -16,6 +16,7 @@ const config = await load('connection-config');
 const { parseInvitation, createInvitation, resolveInvitationConfig } = await load('invitations');
 const storage = new Map();
 globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) };
+assert.equal(config.readConnectionConfig().signaling, 'cloudflare', 'fresh profiles default to Cloudflare signaling');
 for (const [old, expected] of [
   ['uu', { signaling: 'ip', mediaPolicy: 'local-auto' }],
   ['lan', { signaling: 'ip', mediaPolicy: 'local-auto' }],
