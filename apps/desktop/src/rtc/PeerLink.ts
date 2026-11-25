@@ -1027,6 +1027,7 @@ export class PeerLink {
       this.#syncDirection('video');
       this.#makingOffer = true;
       await this.pc.setLocalDescription();
+      if (this.#closed) return;
       // 自己刚生成的 offer 会把 transceiver 绑到新的 m-line 上，刷新一次
       for (const role of TRACK_ROLES) this.#pickBoundTransceiver(role);
       const sdp = this.pc.localDescription?.sdp ? restrictMediaSdp(this.pc.localDescription.sdp, this.#selectedMediaIp) : undefined;
@@ -1085,6 +1086,7 @@ export class PeerLink {
       }
 
       await this.pc.setLocalDescription();
+      if (this.#closed) return;
       const answer = this.pc.localDescription?.sdp ? restrictMediaSdp(this.pc.localDescription.sdp, this.#selectedMediaIp) : undefined;
       if (answer) {
         this.#log(

@@ -101,6 +101,7 @@ export class SignalingError extends Error {
 
 export class SignalingClient {
   #socket: Socket | null = null;
+  #roomSocketId: string | undefined;
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   #listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 
@@ -154,6 +155,7 @@ export class SignalingClient {
   }
 
   disconnect(): void {
+    this.#roomSocketId = undefined;
     this.#stopHeartbeat();
     if (this.#socket) {
       this.#socket.removeAllListeners();
@@ -170,6 +172,7 @@ export class SignalingClient {
     });
 
     socket.on('disconnect', (reason: string) => {
+      this.#roomSocketId = undefined;
       this.#stopHeartbeat();
       this.#emit('state', 'disconnected', reason);
     });
@@ -250,15 +253,26 @@ export class SignalingClient {
         return;
       }
 
+      const socketId = socket.id;
       socket.timeout(REQUEST_TIMEOUT_MS).emit(
         event,
         payload,
         (err: Error | null, res: AckResponse<T> | undefined) => {
+          if (this.#socket !== socket || !socket.connected || socket.id !== socketId) {
+            reject(new SignalingError({
+              code: ProtocolErrorCode.Internal,
+              message: '信令连接已变更',
+            }));
+            return;
+          }
           if (err) {
             reject(new SignalingError({ code: ProtocolErrorCode.Internal, message: `${event} 请求超时` }));
             return;
           }
           if (res?.ok) {
+            if (event === ClientEvent.CreateRoom || event === ClientEvent.JoinRoom) {
+              this.#roomSocketId = socketId;
+            }
             resolve(res.data);
             return;
           }
@@ -285,19 +299,26 @@ export class SignalingClient {
   }
 
   leaveRoom(): Promise<LeaveRoomAckData> {
+    this.#roomSocketId = undefined;
     return this.#request<LeaveRoomAckData>(ClientEvent.LeaveRoom, {});
   }
 
   /* ---------------- P2P 信令发送（M1 起使用） ---------------- */
 
+  #emitToRoom(event: string, payload: unknown): void {
+    const socket = this.#socket;
+    // Socket.IO would otherwise buffer these messages for the next connection.
+    if (socket?.connected && this.#roomSocketId === socket.id) socket.emit(event, payload);
+  }
+
   sendOffer(targetPeerId: string, sdp: string): void {
     const payload: WebRtcOfferPayload = { targetPeerId, sdp, sdpType: 'offer' };
-    this.#socket?.emit(ClientEvent.WebRtcOffer, payload);
+    this.#emitToRoom(ClientEvent.WebRtcOffer, payload);
   }
 
   sendAnswer(targetPeerId: string, sdp: string): void {
     const payload: WebRtcAnswerPayload = { targetPeerId, sdp, sdpType: 'answer' };
-    this.#socket?.emit(ClientEvent.WebRtcAnswer, payload);
+    this.#emitToRoom(ClientEvent.WebRtcAnswer, payload);
   }
 
   sendIceCandidate(targetPeerId: string, candidate: RTCIceCandidateInit): void {
@@ -308,7 +329,7 @@ export class SignalingClient {
       sdpMLineIndex: candidate.sdpMLineIndex ?? null,
       usernameFragment: candidate.usernameFragment ?? null,
     };
-    this.#socket?.emit(ClientEvent.IceCandidate, payload);
+    this.#emitToRoom(ClientEvent.IceCandidate, payload);
   }
 
   /* ---------------- 共享状态广播（M1 起使用） ---------------- */
@@ -316,22 +337,22 @@ export class SignalingClient {
   setSharing(sharing: boolean, quality: QualityLevel = DEFAULT_QUALITY): void {
     if (sharing) {
       const payload: ShareStartedPayload = { quality };
-      this.#socket?.emit(ClientEvent.ShareStarted, payload);
+      this.#emitToRoom(ClientEvent.ShareStarted, payload);
     } else {
       const payload: ShareStoppedPayload = { reason: 'user' };
-      this.#socket?.emit(ClientEvent.ShareStopped, payload);
+      this.#emitToRoom(ClientEvent.ShareStopped, payload);
     }
   }
 
   /** viewer 请求 sender 把「指向自己这一路」提到指定档位 */
   requestQuality(targetPeerId: string, level: QualityLevel): void {
     const payload: QualityRequestPayload = { targetPeerId, level };
-    this.#socket?.emit(ClientEvent.QualityRequest, payload);
+    this.#emitToRoom(ClientEvent.QualityRequest, payload);
   }
 
   /** sender 回执，告知观看方实际生效的档位 */
   notifyQualityChanged(targetPeerId: string, level: QualityLevel): void {
     const payload: QualityChangedRequest = { targetPeerId, level };
-    this.#socket?.emit(ClientEvent.QualityChanged, payload);
+    this.#emitToRoom(ClientEvent.QualityChanged, payload);
   }
 }

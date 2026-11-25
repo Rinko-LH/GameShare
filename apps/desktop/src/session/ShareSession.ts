@@ -2,7 +2,9 @@ import { normalizeVideoBitrateLimit } from '../video-bitrate';
 import { readVoicePreferences, type VoiceMode } from '../voice-settings';
 import { DEFAULT_VIDEO_RESOLUTION, normalizeVideoResolution, qualityForResolution, type VideoResolution } from '../video-resolution';
 import {
+  ProtocolErrorCode,
   type PeerInfo,
+  type RoomJoinedPayload,
   type QualityLevel,
   type TrackRole,
   type TurnRelayPayload,
@@ -211,6 +213,8 @@ export class ShareSession {
   readonly mic = new MicCapture();
 
   #mesh: MeshManager | null = null;
+  #roomRecovery: { join?: Promise<RoomJoinedPayload> } | null = null;
+  #leavingRoom = false;
   #state: SessionState = { ...INITIAL_STATE, voiceMode: readVoicePreferences().mode };
   #micRequest = 0;
   #voiceHeld = { button: false, keyboard: false };
@@ -287,6 +291,11 @@ export class ShareSession {
     this.#unsubscribe = [
       this.signaling.on('state', (state, detail) => {
         if (state === 'disconnected' || state === 'idle') this.#stopMic('连接断开');
+        if (state === 'disconnected' && this.#state.room && !this.#leavingRoom) {
+          this.#roomRecovery = {};
+          this.#teardownMesh();
+          this.#patch({ links: {}, remoteStreams: {}, remoteTracks: {}, remoteSharing: {} });
+        }
         this.#patch({
           connection: {
             state,
@@ -314,7 +323,10 @@ export class ShareSession {
           this.pushLog(line);
         }
         // 连上之后允许下一次断开重新记一条，否则「断开→重连→再断开」会静默
-        if (state === 'connected') this.#lastConnLog = '';
+        if (state === 'connected') {
+          this.#lastConnLog = '';
+          void this.#recoverRoom();
+        }
 
         // 断开时补一次主动探测。
         //
@@ -441,6 +453,7 @@ export class ShareSession {
   }
 
   disconnect(): void {
+    this.#roomRecovery = null;
     this.#teardownMesh();
     this.stopShare();
     // 离场就把麦克风释放掉：房间都不在了还占着录音设备，托盘上的
@@ -495,16 +508,63 @@ export class ShareSession {
   }
 
   async leaveRoom(): Promise<void> {
+    const recovery = this.#roomRecovery;
+    this.#roomRecovery = null;
+    this.#leavingRoom = true;
     this.#stopMic('离开房间');
     try {
-      await this.signaling.leaveRoom();
+      if (recovery?.join) await recovery.join.catch(() => {});
+      if (!recovery || this.signaling.connected) await this.signaling.leaveRoom();
+    } catch (err) {
+      if (!recovery || !(err instanceof SignalingError) || err.payload.code !== ProtocolErrorCode.NotInRoom) {
+        throw err;
+      }
     } finally {
+      this.#leavingRoom = false;
       this.#teardownMesh();
       this.stopShare();
       this.#stopMic('离开房间');
       this.#patch({ room: null, links: {}, remoteStreams: {}, remoteTracks: {}, remoteSharing: {} });
       this.pushLog('已离开房间');
     }
+  }
+
+  async #recoverRoom(): Promise<void> {
+    const recovery = this.#roomRecovery;
+    const room = this.#state.room;
+    if (!recovery || !room) return;
+
+    this.pushLog(`正在恢复房间：${room.roomCode}`);
+    recovery.join = this.signaling.joinRoom(room.roomCode, room.self.nickname);
+    let data: RoomJoinedPayload;
+    try {
+      data = await recovery.join;
+    } catch (err) {
+      // Another disconnect or an explicit leave invalidates this attempt.
+      if (this.#roomRecovery !== recovery) return;
+      const code = err instanceof SignalingError ? err.payload.code : undefined;
+      if (code === ProtocolErrorCode.Internal || code === ProtocolErrorCode.AlreadyInRoom) {
+        // A timed-out join may have reached the server even though its ack was lost.
+        await this.signaling.leaveRoom().catch(() => {});
+        if (this.#roomRecovery !== recovery) return;
+      }
+      this.#roomRecovery = null;
+      const detail = code === ProtocolErrorCode.RoomNotFound
+        ? `原房间 ${room.roomCode} 已失效，请重新创建或获取新邀请。`
+        : `无法恢复房间 ${room.roomCode}：${err instanceof Error ? err.message : String(err)}。请重新加入。`;
+      this.stopShare();
+      this.#patch({ room: null, connection: { ...this.#state.connection, detail } });
+      this.pushLog(detail);
+      return;
+    }
+    if (this.#roomRecovery !== recovery) return;
+
+    this.#roomRecovery = null;
+    this.#enterRoom(data.roomCode, data.self, data.peers, data.turn);
+    if (this.#state.sharing) {
+      this.signaling.setSharing(true, qualityForResolution(this.#state.videoResolution));
+    }
+    this.pushLog(`已恢复房间：${data.roomCode}，当前 ${data.peers.length + 1} 人`);
   }
 
   /**
@@ -528,6 +588,7 @@ export class ShareSession {
 
     this.#patch({
       room: { roomCode, self, peers },
+      connection: { ...this.#state.connection, detail: '' },
       links: {},
       remoteStreams: {},
       remoteTracks: {},
@@ -558,7 +619,7 @@ export class ShareSession {
 
   #syncMesh(turn?: TurnRelayPayload): void {
     const room = this.#state.room;
-    if (!room || this.#mediaBlocked) return;
+    if (!room || this.#mediaBlocked || this.#roomRecovery || this.#leavingRoom) return;
 
     if (!this.#mesh) {
       this.#mesh = new MeshManager({
@@ -1041,6 +1102,7 @@ export class ShareSession {
 
   /** 彻底释放：解绑信令订阅、关闭链路、停止采集与麦克风 */
   dispose(): void {
+    this.#roomRecovery = null;
     for (const off of this.#unsubscribe) off();
     this.#unsubscribe = [];
     this.#teardownMesh();
