@@ -45,7 +45,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
  * - 隧道地址：那是给对面填的。本机填自己的隧道地址虽然也能绕回来，但隧道
  *   一旦关了（或对面填的时候你还没开），表现就是连不上 —— 原先这里一句
  *   「执行 npm run serve」既是误导，打包版用户也根本没有 npm 可用。
- * - 本机地址：动作是「把本机信令服务的开关打开」。
+ * - 本机地址：创建房间时会启动服务，连接失败时应重试创建并检查端口。
  * - 其他地址：动作是「确认对方开着服务、地址没抄错、防火墙放行」。
  */
 function describeConnectError(err: Error, url: string): string {
@@ -54,17 +54,11 @@ function describeConnectError(err: Error, url: string): string {
   const tail = `原始错误：${raw}`;
 
   if (/trycloudflare\.com/i.test(url)) {
-    return (
-      `连不上 ${url}：${cause}。这个隧道地址是「发给对方填」的，本机自己连请改用 ` +
-      `http://localhost:8080。如果隧道已经关掉，重新打开左侧「异地访问」开关就能恢复。${tail}`
-    );
+    return `连不上 ${url}：${cause}。请让房主确认邀请网址仍可用，或重新发送邀请。${tail}`;
   }
 
   if (/localhost|127\.0\.0\.1|\[::1\]/i.test(url)) {
-    return (
-      `连不上 ${url}：${cause}。本机信令服务没在跑 —— 打开左侧「本机信令服务」的启用开关，` +
-      `或先启动本项目再连。${tail}`
-    );
+    return `连不上 ${url}：${cause}。请重试创建房间，或检查本机信令端口。${tail}`;
   }
 
   return (

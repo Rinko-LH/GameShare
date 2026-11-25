@@ -76,7 +76,7 @@ try {
     voice.configure = async value => { const result = await configure(value); window.__voiceRevision = result.revision; return result; };
     window.__testVoiceKey = pressed => window.__voiceCallbacks.forEach(cb => cb({pressed,error:null,revision:window.__voiceRevision}));
   ` });
-  await evaluate('localStorage.removeItem("gs.connectionConfig"); localStorage.removeItem("gs.connectionMode"); localStorage.removeItem("gs.videoBitrateLimit"); localStorage.removeItem("gs.videoResolution"); localStorage.removeItem("gs.voiceSettings"); location.reload(); true');
+  await evaluate('localStorage.removeItem("gs.connectionConfig"); localStorage.removeItem("gs.connectionMode"); localStorage.removeItem("gs.videoQuality"); localStorage.removeItem("gs.videoResolution"); localStorage.removeItem("gs.voiceSettings"); location.reload(); true');
   await until(() => evaluate('Array.isArray(window.__testPCs) && Boolean(document.querySelector(".connection-panel"))'), 'Unified connection page missing');
   assert.equal(await evaluate('Boolean(document.querySelector(".mode-chooser, .mode-card"))'), false);
   assert.equal(await evaluate('document.querySelector("[data-signaling]").options.length'), 3);
@@ -144,8 +144,7 @@ try {
     await submit();
     await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), `Host did not create ${signaling}/${policy}`);
     await until(() => evaluate('document.querySelector("#sidebar-tab-share").getAttribute("aria-selected") === "true"'), 'Joining must open sharing page');
-    assert.equal(await evaluate('document.querySelector("[data-signaling]").disabled'), true);
-    assert.equal(await evaluate('document.querySelector("[data-media-policy]").disabled'), true);
+    assert.equal(await evaluate('Boolean(document.querySelector(".connection-config-form"))'), false, 'Room setup must be hidden after joining');
     const code = await evaluate('document.querySelector(".roomcode__value").textContent');
     visitor = io('http://[::1]:8080', { reconnection: false });
     await new Promise((resolve, reject) => { visitor.once('connect', resolve); visitor.once('connect_error', reject); });
@@ -215,8 +214,8 @@ try {
   await selectConfig('external', 'internet-auto');
   await fill('[data-join-address]', 'http://[::1]:8080'); await fill('[data-join-code]', created.data.roomCode);
   await submit(); await until(() => evaluate('Boolean(document.querySelector(".roomcode__value"))'), 'Manual join failed');
-  async function resolutionSelected(height) {
-    return evaluate(`Array.from(document.querySelectorAll('[data-video-resolution]')).find(button => Number(button.dataset.videoResolution) === ${height})?.getAttribute('aria-checked') === 'true'`);
+  async function qualitySelected(preset) {
+    return evaluate(`document.querySelector('[data-video-quality]')?.dataset.videoQuality === ${JSON.stringify(preset)}`);
   }
   // Sender resolution is local and survives focus, float mode and restarts.
   // Use a synthesized microphone for button tests, never the user's real device.
@@ -273,32 +272,34 @@ try {
   await until(() => evaluate('window.__voiceTestTrack.readyState === "ended"'), 'Mic off did not release device');
   await evaluate('window.__voiceTestContext.close()');
   console.log('PASS: actual voice UI hold/release, blur/tab cancellation, mode changes and true microphone release');
-  await fill('[data-video-bitrate]', '1000000');
-  assert.equal(await evaluate('document.querySelectorAll("[data-video-resolution]").length'), 3);
-  assert.equal(await resolutionSelected(540), true);
-  await evaluate(`Array.from(document.querySelectorAll('[data-video-resolution]')).find(button => Number(button.dataset.videoResolution) === 1080).click()`);
+  assert.equal(await evaluate('document.querySelectorAll(".quality-slider__points > span").length'), 3);
+  assert.equal(await qualitySelected('auto'), true);
+  await fill('[data-video-quality]', '2');
+  assert.equal(await qualitySelected('hd'), true);
   await evaluate('Array.from(document.querySelectorAll("#sidebar-page-share button")).find(b => b.title.includes("测试") || b.title.includes("test")).click()');
   await until(() => evaluate('Boolean(document.querySelector("#sidebar-page-share .tag--live"))'), 'Test sharing did not start');
   await evaluate('document.querySelector("#sidebar-tab-room").click(); document.querySelector("#sidebar-tab-share").click()');
-  assert.equal(await evaluate('document.querySelector("[data-video-bitrate]").value'), '1000000');
+  assert.equal(await qualitySelected('hd'), true);
   assert.equal(await evaluate('Boolean(document.querySelector("#sidebar-page-share .tag--live"))'), true);
   const quality = []; host.on('quality-request', value => quality.push(value.payload.level));
   await evaluate('window.gameShare.windowMode.setEnabled(true)');
   await sleep(250);
-  assert.equal(await resolutionSelected(1080), true);
+  assert.equal(await qualitySelected('hd'), true);
   await evaluate('window.gameShare.windowMode.setEnabled(false)');
   await evaluate('Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "放大")?.click()');
   await sleep(250);
   assert.equal(quality.length, 0, 'Focus and floating mode must not request different sender quality');
-  assert.equal(await evaluate('localStorage.getItem("gs.videoResolution")'), '1080');
-  fs.writeFileSync(path.join(output, 'manual-resolution.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
+  assert.equal(await evaluate('localStorage.getItem("gs.videoQuality")'), 'hd');
+  fs.writeFileSync(path.join(output, 'video-quality.png'), Buffer.from((await command('Page.captureScreenshot')).data, 'base64'));
   await leave();
   await evaluate('localStorage.removeItem("gs.connectionConfig"); localStorage.setItem("gs.connectionMode", "uu"); location.reload(); true');
   await until(() => evaluate('document.querySelector("[data-signaling]")?.value === "ip" && document.querySelector("[data-media-policy]")?.value === "local-auto"'), 'Legacy UU preference migration failed');
-  await until(() => resolutionSelected(1080), 'Resolution preference must restore');
+  await until(() => qualitySelected('hd'), 'Video quality preference must restore');
+  await evaluate('localStorage.removeItem("gs.videoQuality"); localStorage.setItem("gs.videoResolution", "540"); location.reload(); true');
+  await until(() => qualitySelected('standard'), 'Legacy 540p preference must migrate to SD');
   await evaluate('localStorage.setItem("gs.videoResolution", "2160"); location.reload(); true');
-  await until(() => resolutionSelected(540), 'Invalid stored resolution must restore 540p');
-  console.log('PASS: old invites, manual join, live sharing/tab/bitrate preservation, user resolution overrides focus/float, resolution persistence and invalid-value fallback, UU migration');
+  await until(() => qualitySelected('auto'), 'Invalid legacy resolution must fall back to Auto');
+  console.log('PASS: old invites, manual join, live sharing, quality survives tab/focus/float, quality persistence and legacy migration');
   await evaluate('setTimeout(() => window.gameShare.windowControl.close(), 100); true');
 } catch (error) {
   if (ws?.readyState === 1) {

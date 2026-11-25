@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * 保证 `npm install` 之后 Electron 二进制一定是齐的，且落在 E 盘缓存里。
+ * 为旧版客户端和回归测试准备 Electron 二进制。
  *
- * 为什么需要这个文件（**Electron 43 升级带来的回归，不是可选项**）：
+ * Electron 43 的二进制下载行为：
  *
  * Electron 42 起，npm 包**去掉了 postinstall** —— 二进制改成「第一次
  * `require('electron')` 时惰性下载」。这条上游改动同时踩掉了本机两件事：
@@ -19,10 +19,10 @@
  *      避免 C 盘被百余兆撑满」的约定相反。
  *
  * 这里把两件事一起补上：显式调用 electron 自带的 install.js，并按 `.npmrc` 的意图
- * 把缓存目录与镜像塞进环境变量。装完即用，`dev.bat` / `build-exe.bat` 不必再等一次下载。
+ * 把缓存目录与镜像塞进环境变量。
  *
  * 幂等：install.js 自己会比对 `dist/version` 与包版本，已就绪时直接退出（毫秒级）。
- * 由根 `package.json` 的 `postinstall` 触发；也可以手动跑：
+ * 通过 `npm run setup:electron` 显式执行：
  *
  *   node scripts/ensure-electron.mjs
  */
@@ -111,8 +111,8 @@ const result = spawnSync(process.execPath, [installer], { cwd: ROOT, env, stdio:
 
 if (result.status !== 0 || !existsSync(exePath)) {
   console.error(
-    `\n✗ Electron ${version} 二进制没装上。dev.bat 与打包都要用它，先解决这一条：\n` +
-      '    node scripts/ensure-electron.mjs\n' +
+    `\n✗ Electron ${version} 二进制没装上。旧版客户端和回归测试需要它：\n` +
+      '    npm run setup:electron\n' +
       '  再失败就查网络到不到镜像（.npmrc 里的 electron_mirror）。',
   );
   process.exit(1);

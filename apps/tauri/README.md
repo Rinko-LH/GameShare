@@ -4,29 +4,29 @@
 
 ## 构建和验证
 
-在仓库根目录安装 npm 依赖。需要 Windows x64、Rust MSVC、Windows SDK 和 WebView2 Evergreen。
-
-在此目录构建测试可执行文件：
+需要 Windows x64、Node.js 22.12 或更新版本、Rust MSVC、Windows SDK 和 WebView2 Evergreen。在仓库根目录运行：
 
 ```powershell
-npx --yes @tauri-apps/cli@2.12.6 build --target x86_64-pc-windows-msvc --no-bundle
+npm ci
+npm run dev:desktop
+npm run build:desktop
 ```
 
-默认输出在 `src-tauri/target/x86_64-pc-windows-msvc/release/gameshare-tauri.exe`。WebView2 Evergreen 已安装的机器可直接运行该 EXE。
+`dev:desktop` 通过本机 Vite 服务热更新界面。`build:desktop` 默认将测试 EXE 编译到仓库根目录的 `.cache/tauri-target/x86_64-pc-windows-msvc/release/gameshare-tauri.exe`。
 
 用 Node.js 24 运行集成测试：
 
 ```powershell
-node tests/check-client.mjs src-tauri/target/x86_64-pc-windows-msvc/release/gameshare-tauri.exe
+node apps/tauri/tests/check-client.mjs .cache/tauri-target/x86_64-pc-windows-msvc/release/gameshare-tauri.exe
 ```
 
 测试使用独立用户目录，创建房间、用邀请加入、发送三路测试源，并检查浮窗身份、静音、最小化期间播放和窗口清理。可追加 `--cloudflare` 改用短时公网测试入口，验证创建临时网址、复制邀请、从公网入房和关闭隧道。可用 `--electron=<旧版 GameShare.exe 的路径>` 将第三个发送者换成 Electron。追加 `--window-capture` 可将第一路替换为实际窗口采集。此模式需要在 WebView2 共享面板中手动选中终端提示的测试窗口。
 
 ## Cloudflare 自动隧道
 
-选择「Cloudflare 自动隧道」并创建房间，或在高级连接设置开启内置信令后打开隧道。免安装 ZIP 随附 Cloudflare 官方 Windows x64 版 `cloudflared.exe`，与 GameShare 主程序放在同一目录。开启时会校验组件的 SHA-256，再启动本地副本。构建产物用于开发时，可以把同版本组件放到测试 EXE 旁边，或用 `GAMESHARE_CLOUDFLARED` 指定该文件。
+选择「Cloudflare 自动隧道」并创建房间。免安装 ZIP 随附 Cloudflare 官方 Windows x64 版 `cloudflared.exe`，与 GameShare 主程序放在同一目录。开启时会校验组件的 SHA-256，再启动本地副本。构建产物用于开发时，可以把同版本组件放到测试 EXE 旁边，或用 `GAMESHARE_CLOUDFLARED` 指定该文件。
 
-信令通过临时入口连通后可复制邀请。关闭隧道、关掉内置信令或退出客户端时，会结束对应的 cloudflared 进程。隧道仅用于房间信令。
+信令通过临时入口连通后可复制邀请。房间用完后，离房再选择「关闭临时邀请网址」，也可以退出客户端。隧道仅用于房间信令。
 
 ## 当前范围
 

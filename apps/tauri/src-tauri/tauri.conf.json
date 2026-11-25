@@ -4,6 +4,8 @@
   "version": "1.6.2",
   "identifier": "com.gameshare.tauri",
   "build": {
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "node ../../node_modules/vite/bin/vite.js ../desktop --mode tauri --host 127.0.0.1 --port 1420",
     "frontendDist": "../../desktop/dist-tauri",
     "beforeBuildCommand": "node ../../node_modules/vite/bin/vite.js build ../desktop --mode tauri"
   },

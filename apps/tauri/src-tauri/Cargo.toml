@@ -4,6 +4,9 @@ version = "1.6.2"
 description = "GameShare desktop client for WebView2"
 edition = "2021"
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

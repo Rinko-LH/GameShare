@@ -1149,7 +1149,7 @@ async function main() {
   if (releaseDirs.length === 0) {
     console.log(
       '  （提示）没找到打包产物，跳过「产物里到底有没有 koffi」这两条；' +
-        '有条件就跑一次 npm run build:exe 再看',
+        '有条件就跑一次 npm run build:electron:exe 再看',
     );
   } else {
     const newest = releaseDirs[0];

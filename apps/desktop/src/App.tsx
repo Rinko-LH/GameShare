@@ -1,11 +1,8 @@
-import { VIDEO_RESOLUTIONS, readVideoResolution, saveVideoResolution, type VideoResolution } from './video-resolution';
-import { VIDEO_BITRATE_OPTIONS, normalizeVideoBitrateLimit, readVideoBitrateLimit, saveVideoBitrateLimit } from './video-bitrate';
+import { VIDEO_QUALITY_PRESETS, readVideoQuality, saveVideoQuality, type VideoQualityPreset } from './video-resolution';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { PeerInfo } from '@game-share/protocol';
 import { DEFAULT_SIGNALING_URL, normalizeSignalingAddress, remoteAudioAudience } from '@game-share/shared';
-
-import type { TurnUiStatus } from './types/global';
 
 import type {
   AudioCaptureMode,
@@ -42,22 +39,6 @@ const LINK_LABEL: Record<string, I18nKey> = {
   disconnected: 'state.link.disconnected',
   failed: 'state.link.failed',
   closed: 'state.link.closed',
-};
-
-/** 内置信令服务器的状态文案。'port-in-use' 不是故障，是本机已经有服务器了。 */
-const SERVER_STATE_LABEL: Record<EmbeddedServerStatus['state'], I18nKey> = {
-  running: 'state.server.running',
-  'port-in-use': 'state.server.port-in-use',
-  failed: 'state.server.failed',
-  stopped: 'state.server.stopped',
-};
-
-/** 异地访问隧道的状态文案 */
-const TUNNEL_STATE_LABEL: Record<TunnelStatus['state'], I18nKey> = {
-  stopped: 'state.tunnel.stopped',
-  starting: 'state.tunnel.starting',
-  running: 'state.tunnel.running',
-  failed: 'state.tunnel.failed',
 };
 
 type TileVariant = 'grid' | 'main' | 'thumb';
@@ -124,12 +105,14 @@ const AUDIO_MODE_LABEL: Partial<Record<AudioCaptureMode, I18nKey>> = {
  * 发送端独立应用帧率与用户分辨率，不受观看布局影响。
  */
 const UI_FPS_OPTIONS: readonly number[] = [30, 60, 120];
+const [AUTO_VIDEO_QUALITY, ...MANUAL_VIDEO_QUALITIES] = VIDEO_QUALITY_PRESETS;
 
 /** 帧率偏好的 localStorage 键；跨会话记住用户选过哪一档 */
 const SHARE_FPS_STORAGE_KEY = 'gs.shareFps';
 
 export default function App() {
   const [session] = useState(() => new ShareSession());
+  const [videoQuality, setVideoQuality] = useState(readVideoQuality);
   const [voiceBinding, setVoiceBinding] = useState(() => readVoicePreferences().binding);
   const [voiceRecording, setVoiceRecording] = useState(false);
   const voiceHotkeyError = useVoiceHotkey(session, voiceBinding, voiceRecording);
@@ -140,7 +123,6 @@ export default function App() {
   const [connectionConfig, setConnectionConfig] = useState<ConnectionConfig>(readConnectionConfig);
   const [selectedMediaIp, setSelectedMediaIp] = useState('');
   const [pendingInvitation, setPendingInvitation] = useState('');
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [connectionRole, setConnectionRole] = useState<'host' | 'guest'>('host');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [creatingRoom, setCreatingRoom] = useState(false);
@@ -148,10 +130,6 @@ export default function App() {
   const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING_URL);
   const [selectedInviteAddress, setSelectedInviteAddress] = useState<string | null>(null);
   const [nickname, setNickname] = useState('');
-  const [joinCode, setJoinCode] = useState('');
-  // 加入失败要在界面上看得见：原先只写进默认收起的日志面板，
-  // 满员被拒时表现成「点了加入没反应」，被当成 bug 报过（M3 待办）。
-  const [joinError, setJoinError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [sources, setSources] = useState<CaptureSourceInfo[]>([]);
@@ -162,8 +140,7 @@ export default function App() {
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
   const [stats, setStats] = useState<Record<string, LinkStats>>({});
   const [embeddedServer, setEmbeddedServer] = useState<EmbeddedServerStatus | null>(null);
-  const [serverBusy, setServerBusy] = useState(false);
-  /** 异地访问隧道。默认关闭，只有用户点开关才会起 */
+  /** Cloudflare 模式创建房间时准备临时邀请网址。 */
   const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
   const [tunnelBusy, setTunnelBusy] = useState(false);
   /**
@@ -213,16 +190,9 @@ export default function App() {
     if (document.fullscreenElement) await document.exitFullscreen();
   };
 
-  /* ---- 左侧折叠状态：默认全收，让核心操作在首屏就能看到 ---- */
-  const [serverOpen, setServerOpen] = useState(false);
-  const [logsOpen, setLogsOpen] = useState(false);
+  const logDialog = useRef<HTMLDialogElement>(null);
+  const [logCopyStatus, setLogCopyStatus] = useState<'copying' | 'copied' | 'failed'>();
   const [sidePage, setSidePage] = useState<'room' | 'share'>('room');
-
-  /**
-   * 信令地址输入框的显隐。默认收起：地址是「网络详情」，对傻瓜流程是噪音，
-   * 对截图是泄露面 —— 邀请流会自动填它，手动用户点开「网络设置」再填。
-   */
-  const [showNetField, setShowNetField] = useState(false);
 
   /**
    * 左侧栏宽度与收起状态（localStorage 记忆：gs.sidebarWidth / gs.sidebarCollapsed）。
@@ -302,116 +272,6 @@ export default function App() {
   /** 被放大到主画面的那一路；null 表示网格布局 */
   const [focusedPeerId, setFocusedPeerId] = useState<string | null>(null);
 
-  /* ---------------- TURN 中继配置 ---------------- */
-
-  const [turnUi, setTurnUi] = useState<TurnUiStatus | null>(null);
-  const [turnBusy, setTurnBusy] = useState(false);
-  const [turnError, setTurnError] = useState('');
-  const [turnAccountId, setTurnAccountId] = useState('');
-  const [turnApiToken, setTurnApiToken] = useState('');
-  const [turnKeyIdInput, setTurnKeyIdInput] = useState('');
-  const [turnKeySecretInput, setTurnKeySecretInput] = useState('');
-  /**
-   * 「建出来了但没存住」时的一次性 secret 展示。
-   *
-   * **只在这个状态下非空，且用完即清**。Cloudflare 的 key 只在创建时返回一次，
-   * 接口拿不回来 —— 这种情况下不给他看就等于永远丢了。
-   * 所以明文只在这一刻出现在界面上，不写日志、不进剪贴板。
-   */
-  const [turnOneShotSecret, setTurnOneShotSecret] = useState('');
-
-  /** 刷新 TURN 状态。配置改动后必须重拉，否则界面显示的是旧值 */
-  const refreshTurn = useCallback(() => {
-    const api = window.gameShare?.turn;
-    if (!api) return;
-    void api.get().then((status) => {
-      setTurnUi(status);
-      // 账号 id 只在「没填过」时带入，不要覆盖用户正在输入的内容
-      setTurnAccountId((cur) => cur || status.accountId || '');
-    });
-  }, []);
-
-  useEffect(() => {
-    refreshTurn();
-    return window.gameShare?.server?.onStatus(() => refreshTurn());
-  }, [refreshTurn]);
-
-  const handleTurnCreate = useCallback(async () => {
-    const api = window.gameShare?.turn;
-    if (!api) return;
-    setTurnBusy(true);
-    setTurnError('');
-    setTurnOneShotSecret('');
-    try {
-      const res = await api.create(turnAccountId, turnApiToken);
-      if (res.ok) {
-        // token 用完即弃，不留在 state 里
-        setTurnApiToken('');
-        refreshTurn();
-        return;
-      }
-      setTurnError(res.error ?? t('turn.createFailed'));
-      if (res.keySecret) setTurnOneShotSecret(res.keySecret);
-    } finally {
-      setTurnBusy(false);
-    }
-  }, [turnAccountId, turnApiToken, refreshTurn, t]);
-
-  const handleTurnSaveManual = useCallback(async () => {
-    const api = window.gameShare?.turn;
-    if (!api) return;
-    setTurnBusy(true);
-    setTurnError('');
-    try {
-      const res = await api.save(turnKeyIdInput, turnKeySecretInput);
-      if (res.ok) {
-        setTurnKeyIdInput('');
-        setTurnKeySecretInput('');
-        // 「可疑但已存」也要说出来。主进程只拒确定的错，软的放行了 ——
-        // 那句话是唯一的提示，吞掉就等于没提示（界面上的黄灯要等下次刷新才亮）。
-        setTurnError(res.warning ?? '');
-        refreshTurn();
-        return;
-      }
-      setTurnError(res.error ?? t('turn.saveFailed'));
-    } finally {
-      setTurnBusy(false);
-    }
-  }, [turnKeyIdInput, turnKeySecretInput, refreshTurn, t]);
-
-  const handleTurnClear = useCallback(async () => {
-    const api = window.gameShare?.turn;
-    if (!api) return;
-    setTurnBusy(true);
-    setTurnError('');
-    try {
-      await api.clear();
-      setTurnOneShotSecret('');
-      refreshTurn();
-    } finally {
-      setTurnBusy(false);
-    }
-  }, [refreshTurn]);
-
-  const turnConfigured = turnUi?.configured === true;
-  const turnState = turnUi?.turnState ?? 'off';
-  const turnIssued = turnUi?.turnIssued ?? 0;
-  const turnSource = turnUi?.source ?? 'none';
-  const turnKeyIdMasked = turnUi?.keyIdMasked ?? '';
-  /**
-   * 格式问题（2026-10-05 补）。
-   *
-   * **红灯压过绿灯**：格式不对时 `turnState` 仍会是 `ready`
-   * （`#turnState()` 只看「有没有配」+「上次签发有没有报错」），
-   * 而实测过「绿灯 + 一对废凭据」—— 把账号 token 填进 secret 格就是这样。
-   * 所以这里单独判一次，`formatHard` 存在时状态灯一律按错显示。
-   */
-  const turnFormatIssues = turnUi?.formatIssues ?? [];
-  const turnFormatHard = turnUi?.formatHard === true;
-
-  const serverUrlRef = useRef(serverUrl);
-  serverUrlRef.current = serverUrl;
-
   const {
     connection,
     room,
@@ -422,8 +282,6 @@ export default function App() {
     sharing,
     captureLabel,
     shareFps,
-    videoBitrateLimit,
-    videoResolution,
     hasAudio,
     appAudioEnabled,
     audioMode,
@@ -479,6 +337,10 @@ export default function App() {
     if (!inviteAddress) return null;
     try { return normalizeSignalingAddress(inviteAddress); } catch { return null; }
   })();
+  const inviteNeedsAttention = inRoom && connectionRole === 'host' && !validInviteAddress;
+  const cloudInvite = connectionConfig.signaling === 'cloudflare';
+  const inviteCanRetry = cloudInvite && (tunnel?.state === 'failed' || tunnel?.state === 'stopped');
+  const roomConnectionError = connectionError || (!connected ? connection.detail : inviteCanRetry ? tunnel?.detail : null);
 
   /* ---------------- 内置信令服务器 ---------------- */
 
@@ -497,17 +359,6 @@ export default function App() {
       alive = false;
       unsubscribe();
     };
-  }, []);
-
-  const handleToggleServer = useCallback(async (enabled: boolean): Promise<void> => {
-    const api = window.gameShare?.server;
-    if (!api) return;
-    setServerBusy(true);
-    try {
-      setEmbeddedServer(await api.setEnabled(enabled));
-    } finally {
-      setServerBusy(false);
-    }
   }, []);
 
   /* ---------------- 异地访问隧道 ---------------- */
@@ -535,10 +386,14 @@ export default function App() {
     setTunnelBusy(true);
     try {
       setTunnel(await api.setEnabled(enabled));
+    } catch (err) {
+      const message = ShareSession.describeError(err);
+      setConnectionError(message);
+      session.pushLog(message);
     } finally {
       setTunnelBusy(false);
     }
-  }, []);
+  }, [session]);
 
   const changeConnectionConfig = (config: ConnectionConfig) => {
     if (inRoom || busy || connection.state === 'connecting') return;
@@ -546,7 +401,7 @@ export default function App() {
     session.configureMediaIp(null);
     if (config.signaling !== connectionConfig.signaling) {
       setSelectedInviteAddress(null);
-      if (config.signaling !== 'cloudflare' && tunnel?.enabled) void handleToggleTunnel(false).catch(err => session.pushLog(ShareSession.describeError(err)));
+      if (config.signaling !== 'cloudflare' && tunnel?.enabled) void handleToggleTunnel(false);
     }
     if (config.mediaPolicy !== connectionConfig.mediaPolicy) setSelectedMediaIp('');
     setConnectionConfig(config);
@@ -645,19 +500,8 @@ export default function App() {
    * 地址和房间码分两次复制，对方就得在两个格子里各填一次；合成一条文本发过去，
    * 对面照着填完就能进 —— 少一次「你等一下我看下地址」的往返。
    */
-  /**
-   * 刚复制成功的是哪个按钮，用来在按钮上闪一下「已复制」。
-   *
-   * 剪贴板是看不见的：复制成功时界面如果一点动静都没有，用户没法判断到底成了没有
-   * —— 只会以为按钮还是坏的（这正是 2026-09-17 那次反馈的一半原因）。
-   */
-  const [copied, setCopied] = useState<'code' | 'invite' | null>(null);
+  const [inviteCopyStatus, setInviteCopyStatus] = useState<'copied' | 'failed' | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flashCopied = useCallback((which: 'code' | 'invite'): void => {
-    setCopied(which);
-    if (copiedTimer.current) clearTimeout(copiedTimer.current);
-    copiedTimer.current = setTimeout(() => setCopied(null), 1400);
-  }, []);
   useEffect(
     () => () => {
       if (copiedTimer.current) clearTimeout(copiedTimer.current);
@@ -694,13 +538,16 @@ export default function App() {
       '一起玩 GameShare！选择“加入房间”，粘贴下面的完整邀请。信令和音视频配置会自动读取；如需媒体 IP，请选择你自己电脑的地址，再点“连接并加入”：',
       code,
     ].join('\n');
-    if (await writeClipboard(text)) {
+    const copied = await writeClipboard(text);
+    setInviteCopyStatus(copied ? 'copied' : 'failed');
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setInviteCopyStatus(null), 2000);
+    if (copied) {
       session.pushLog('邀请已复制：朋友选择“加入房间”并粘贴，配置自动读取，必要时再选择自己的媒体 IP');
-      flashCopied('invite');
     } else {
-      session.pushLog('复制失败，请手动记录信令地址和房间码');
+      session.pushLog('邀请复制失败，请重试');
     }
-  }, [room, validInviteAddress, connectionConfig, session, writeClipboard, flashCopied]);
+  }, [room, validInviteAddress, connectionConfig, session, writeClipboard]);
 
   // All invitation entry points share policy validation before opening any connection.
   const joinModeInvitation = useCallback(async (text: string) => {
@@ -715,7 +562,6 @@ export default function App() {
     setConnectionConfig(config);
     saveConnectionConfig(config);
     setServerUrl(target);
-    setJoinError(null);
     setConnectionError(null);
     if (!invite.config && !invite.mode && !invite.mediaPolicy) session.pushLog('旧邀请未携带连接策略，将沿用当前配置，请确认与房主一致。');
     const selected = config.mediaPolicy === 'selected-ip-experimental';
@@ -727,18 +573,6 @@ export default function App() {
     await session.connectAndWait(target, config.mediaPolicy !== 'internet-auto');
     await session.joinRoom(invite.room, nickname);
   }, [inRoom, connectionConfig, session, nickname, selectedMediaIp]);
-
-  const handleJoinInputChange = useCallback((raw: string) => {
-    const invite = parseInvitation(raw);
-    if (!invite) { setJoinCode(raw.toUpperCase().slice(0, 8)); return; }
-    if (invite.error) { setJoinError(invite.error); return; }
-    if (busy || inRoom || connection.state === 'connecting') return;
-    setJoinCode(invite.room ?? '');
-    setBusy(true);
-    void joinModeInvitation(raw).catch((err: unknown) => {
-      setJoinError(ShareSession.describeError(err));
-    }).finally(() => setBusy(false));
-  }, [busy, inRoom, connection.state, joinModeInvitation]);
 
   /* ---------------- 链路统计轮询 ---------------- */
 
@@ -772,22 +606,6 @@ export default function App() {
   }, [inRoom, session, room?.peers.length]);
 
   /* ---------------- 操作 ---------------- */
-
-  const handleConnect = useCallback(() => {
-    if (connected || connection.state === 'connecting') {
-      session.disconnect();
-      return;
-    }
-    try {
-      if (connectionConfig.mediaPolicy === 'selected-ip-experimental' && !selectedMediaIp) throw new Error('请先选择本机媒体 IP。');
-      session.configureMediaIp(connectionConfig.mediaPolicy === 'selected-ip-experimental' ? selectedMediaIp : null);
-      session.connect(serverUrl.trim() || DEFAULT_SIGNALING_URL, connectionConfig.mediaPolicy !== 'internet-auto');
-      setServerUrl(session.serverUrl);
-    } catch (err) {
-      setJoinError(ShareSession.describeError(err));
-      session.pushLog(ShareSession.describeError(err));
-    }
-  }, [connected, connection.state, serverUrl, session, connectionConfig.mediaPolicy, selectedMediaIp]);
 
   const run = useCallback(
     async (fn: () => Promise<unknown>): Promise<void> => {
@@ -856,11 +674,6 @@ export default function App() {
     if (!sharing) setActiveSourceId(null);
   }, [sharing]);
 
-  // 成功进房就清掉上一次的加入失败提示，否则离开房间后又会看到旧错误。
-  useEffect(() => {
-    if (inRoom) setJoinError(null);
-  }, [inRoom]);
-
   const pickSource = useCallback(
     async (sourceId: string) => {
       setBusy(true);
@@ -913,18 +726,15 @@ export default function App() {
 
   /* ---- 共享帧率 ---- */
 
-  useEffect(() => { session.setVideoResolution(readVideoResolution()); }, [session]);
-  const changeVideoResolution = useCallback((height: VideoResolution) => {
-    session.setVideoResolution(height);
-    saveVideoResolution(height);
-  }, [session]);
+  useEffect(() => {
+    session.setVideoResolution(videoQuality.height);
+    session.setVideoBitrateLimit(videoQuality.bitrateLimit);
+  }, [session, videoQuality]);
 
-  useEffect(() => { session.setVideoBitrateLimit(readVideoBitrateLimit()); }, [session]);
-  const changeVideoBitrateLimit = useCallback((raw: string) => {
-    const limit = normalizeVideoBitrateLimit(raw);
-    session.setVideoBitrateLimit(limit);
-    saveVideoBitrateLimit(limit);
-  }, [session]);
+  const changeVideoQuality = (preset: VideoQualityPreset) => {
+    setVideoQuality(preset);
+    saveVideoQuality(preset);
+  };
 
   // 上次会话选过的帧率：挂载时读回一次。非法值 / 缺失一律保持默认 30。
   // 必须在进房前就落到 session 上 —— 「先改偏好后进房」的时序由 #syncMesh 兜底。
@@ -1023,22 +833,48 @@ export default function App() {
 
   /* ---------------- 渲染 ---------------- */
 
-  const resolutionControl = <div className="resolution-control">
-    <span className="hint hint--dim">{t('share.resolutionLabel')}</span>
-    <div className="resolution-options" role="radiogroup" aria-label={t('share.resolutionLabel')}>
-      {VIDEO_RESOLUTIONS.map(height => <button key={height} type="button" role="radio" aria-checked={videoResolution === height} data-video-resolution={height} className={videoResolution === height ? 'btn btn--mode btn--mode-on' : 'btn btn--mode'} onClick={() => changeVideoResolution(height)}>
-        {t(height === 360 ? 'share.resolutionLow' : height === 540 ? 'share.resolutionMedium' : 'share.resolutionHigh')} {height}p
-      </button>)}
+  const automaticQuality = videoQuality.id === 'auto';
+  const qualityIndex = automaticQuality ? 1 : MANUAL_VIDEO_QUALITIES.indexOf(videoQuality);
+  const qualityControl = <div className="quality-control">
+    <div className="quality-control__header">
+      <span className="hint hint--dim">{t('share.quality')}</span>
+      <button
+        type="button" className={`btn btn--tiny ${automaticQuality ? 'btn--primary' : 'btn--ghost'}`}
+        aria-pressed={automaticQuality} data-video-quality-auto
+        onClick={() => changeVideoQuality(AUTO_VIDEO_QUALITY)}
+      >
+        {t('share.quality.auto')}
+      </button>
     </div>
+    <span className="quality-slider">
+      <span className="quality-slider__track" aria-hidden="true">
+        {!automaticQuality && <span style={{ width: `${qualityIndex / (MANUAL_VIDEO_QUALITIES.length - 1) * 100}%` }} />}
+      </span>
+      <span className="quality-slider__points" aria-hidden="true">
+        {MANUAL_VIDEO_QUALITIES.map((preset, index) => (
+          <span key={preset.id} className={!automaticQuality && index <= qualityIndex ? 'quality-slider__point--filled' : undefined} />
+        ))}
+      </span>
+      <input
+        type="range" min={0} max={MANUAL_VIDEO_QUALITIES.length - 1} step={1} value={qualityIndex}
+        aria-label={t('share.quality.manual')} aria-valuetext={t(`share.quality.${videoQuality.id}`)}
+        data-video-quality={videoQuality.id}
+        onKeyDown={event => {
+          if (event.key.startsWith('Arrow')) event.preventDefault();
+        }}
+        onChange={event => changeVideoQuality(MANUAL_VIDEO_QUALITIES[event.currentTarget.valueAsNumber])}
+        onPointerUp={event => {
+          // Clicking the middle node in Auto leaves the native range value unchanged.
+          if (automaticQuality && event.button === 0) {
+            changeVideoQuality(MANUAL_VIDEO_QUALITIES[event.currentTarget.valueAsNumber]);
+          }
+        }}
+      />
+    </span>
+    <span className="quality-slider__labels" aria-hidden="true">
+      {MANUAL_VIDEO_QUALITIES.map(preset => <span key={preset.id} className={preset === videoQuality ? 'quality-slider__label--active' : undefined}>{t(`share.quality.${preset.id}`)}</span>)}
+    </span>
   </div>;
-
-  const bitrateControl = <label className="ip-connect__field">
-    <span className="hint">{t('share.bitrateLabel')}</span>
-    <select className="field__input field__input--compact" data-video-bitrate aria-label={t('share.bitrateLabel')} value={videoBitrateLimit ?? ''} onChange={e => changeVideoBitrateLimit(e.target.value)}>
-      <option value="">{t('share.bitrateAuto')}</option>
-      {VIDEO_BITRATE_OPTIONS.map(limit => <option key={limit} value={limit}>{limit / 1_000_000} Mbps</option>)}
-    </select>
-  </label>;
 
   // 共享状态下这套列表要能反复用（initial 选源 / 共享中换源）。
   const sourceList = sources.length > 0 && (
@@ -1389,6 +1225,17 @@ export default function App() {
     };
   }, []);
 
+  const copyLogReport = async (): Promise<void> => {
+    setLogCopyStatus('copying');
+    const report = [
+      `GameShare${appVersion ? ` V${appVersion}` : ''} · ${t('log.report')}`,
+      new Date().toISOString(),
+      '',
+      ...state.logs,
+    ].join('\n');
+    setLogCopyStatus(await writeClipboard(report) ? 'copied' : 'failed');
+  };
+
   return (
     <div className={`app${isFloat ? ' app--tiles' : ''}`}>
       {/*
@@ -1415,15 +1262,23 @@ export default function App() {
           <span className="app__logo">◧</span>
           <div>
             <h1>GameShare</h1>
-            <p className="app__subtitle">
-              {t('app.tagline')}
-              {appVersion ? ` · V${appVersion}` : ''}
-            </p>
+            {appVersion && <p className="app__subtitle">V{appVersion}</p>}
           </div>
         </div>
 
         <div className="app__header-right">
-          <button className="btn btn--tiny" type="button" onClick={() => { setSideCollapsed(false); setSidePage('room'); }}>房间连接</button>
+          {sideCollapsed && <button className="btn btn--tiny" type="button" onClick={() => { toggleSideCollapsed(); setSidePage('room'); }}>{t('sidebar.room')}</button>}
+          <button
+            className="btn btn--tiny"
+            type="button"
+            aria-haspopup="dialog"
+            onClick={() => {
+              if (logCopyStatus !== 'copying') setLogCopyStatus(undefined);
+              logDialog.current?.showModal();
+            }}
+          >
+            {t('log.title')}
+          </button>
           {/* 中英切换：只切界面文案，房间/共享等功能不受影响 */}
           <button
             type="button"
@@ -1507,6 +1362,36 @@ export default function App() {
         </div>
       </header>
 
+      <dialog ref={logDialog} className="log-dialog" aria-labelledby="log-dialog-title">
+        <div className="log-dialog__header">
+          <h2 id="log-dialog-title">{t('log.title')}</h2>
+          <button
+            type="button"
+            className="btn btn--tiny"
+            disabled={state.logs.length === 0 || logCopyStatus === 'copying'}
+            onClick={() => void copyLogReport()}
+          >
+            {t('log.copyReport')}
+          </button>
+          <button type="button" className="btn btn--tiny" onClick={() => logDialog.current?.close()}>
+            {t('win.close')}
+          </button>
+        </div>
+        <div className="logs" tabIndex={0} role="region" aria-labelledby="log-dialog-title">
+          {state.logs.length === 0 ? (
+            <p className="hint hint--dim">{t('log.empty')}</p>
+          ) : (
+            state.logs.map((line, i) => (
+              <div key={`${i}-${line}`} className="logs__line">{line}</div>
+            ))
+          )}
+        </div>
+        <p role="status" className={`hint${logCopyStatus === 'failed' ? ' hint--warn' : ''}`}>
+          {logCopyStatus === 'copied' && t('log.copied')}
+          {logCopyStatus === 'failed' && t('log.copyFailed')}
+        </p>
+      </dialog>
+
       <main
         className="app__body"
         style={
@@ -1517,20 +1402,6 @@ export default function App() {
         {!sideCollapsed && (
         <div className="app__side">
           <div className="sidebar-header">
-            <div className="sidebar-summary" aria-live="polite">
-              <span>{inRoom
-                ? connected ? fmt('sidebar.roomSummary', { n: members.length }) : t('status.host.disconnected')
-                : headerStatus.label}</span>
-              {inRoom && <button type="button" className="btn btn--tiny" onClick={() => void copyInvite()} disabled={!validInviteAddress || !connected} title={t('room.copyInviteTitle')}>
-                {copied === 'invite' ? t('room.copied') : t('room.copyInvite')}
-              </button>}
-            </div>
-            {inRoom && connectionRole === 'host' && !validInviteAddress && <div className="sidebar-warning" aria-live="polite">
-              <span>{connectionConfig.signaling === 'cloudflare'
-                ? tunnel?.state === 'failed' || tunnel?.state === 'stopped' ? '邀请网址未就绪，请到房间连接重试。' : '正在准备邀请网址…就绪后才能复制，可先选择共享画面。'
-                : '邀请地址未就绪，请查看房间连接。'}</span>
-              {sidePage !== 'room' && <button type="button" className="btn btn--tiny" onClick={() => setSidePage('room')}>{t('sidebar.viewRoom')}</button>}
-            </div>}
             <div className="sidebar-tabs" role="tablist" aria-label={t('sidebar.controls')}>
               {(['room', 'share'] as const).map((page) => <button key={page} id={`sidebar-tab-${page}`} type="button" role="tab" tabIndex={sidePage === page ? 0 : -1} aria-selected={sidePage === page} aria-controls={`sidebar-page-${page}`} className={`btn${sidePage === page ? ' btn--primary' : ' btn--ghost'}`} onClick={() => setSidePage(page)} onKeyDown={(event) => {
                 if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -1542,10 +1413,19 @@ export default function App() {
                 {t(page === 'room' ? 'sidebar.room' : 'sidebar.share')}
               </button>)}
             </div>
-            {sidePage === 'share' && !connected && <div className="sidebar-warning">
-              <span>{inRoom ? t('status.host.disconnected') : t('share.needRoom')}</span>
-              <button type="button" className="btn btn--tiny" onClick={() => setSidePage('room')}>{t('sidebar.viewRoom')}</button>
+            {inRoom && <div className="sidebar-summary">
+              <span role="status">{connected ? fmt('sidebar.roomSummary', { n: members.length }) : t('status.host.disconnected')}</span>
+              <button type="button" className="btn btn--tiny" onClick={() => void copyInvite()} disabled={!validInviteAddress || !connected} title={t('room.copyInviteTitle')}>
+                {t(inviteCopyStatus === 'copied' ? 'room.copied' : inviteCopyStatus === 'failed' ? 'room.copyFailed' : 'room.copyInvite')}
+              </button>
             </div>}
+            {inviteNeedsAttention && <div className="sidebar-warning">
+              <span role="status">{t(cloudInvite && !inviteCanRetry ? 'room.invitePreparing' : 'room.inviteUnavailable')}</span>
+              {inviteCanRetry && <button type="button" className="btn btn--tiny" disabled={busy || tunnelBusy} onClick={() => { setConnectionError(null); void handleToggleTunnel(true); }}>
+                {t('room.retryInvite')}
+              </button>}
+            </div>}
+            {sidePage === 'share' && !inRoom && <p className="hint hint--warn">{t('share.needRoom')}</p>}
           </div>
           <div className="sidebar-content">
           {isFloat && floatWindow && !isTauri && <section className="panel panel--tight">
@@ -1557,456 +1437,56 @@ export default function App() {
           </section>}
 
           <div id="sidebar-page-room" className="sidebar-page" role="tabpanel" aria-labelledby="sidebar-tab-room" hidden={sidePage !== 'room'}>
-          {!inRoom && <label className="panel panel--tight ip-connect__field"><span className="hint">你的昵称（可不填）</span>
-            <input className="field__input field__input--compact" value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={16} disabled={busy} placeholder="朋友会看到的名字" />
-          </label>}
-          <ConnectionPanel config={connectionConfig} onConfig={changeConnectionConfig} mediaIp={selectedMediaIp} onMediaIp={setSelectedMediaIp} initialInvitation={pendingInvitation} onInvitation={readInvitationSelection} role={connectionRole} onRoleChange={changeConnectionRole} connectionError={connectionError ?? (connected && !inRoom ? connection.detail : null)} onConnectionError={setConnectionError} onCreatingRoom={setCreatingRoom} session={session} nickname={nickname} disabled={inRoom || connection.state === 'connecting'}
-            joined={inRoom} busy={busy} server={embeddedServer} tunnel={tunnel} inviteAddress={inviteAddress}
+          <ConnectionPanel config={connectionConfig} onConfig={changeConnectionConfig} mediaIp={selectedMediaIp} onMediaIp={setSelectedMediaIp} initialInvitation={pendingInvitation} onInvitation={readInvitationSelection} role={connectionRole} onRoleChange={changeConnectionRole} connectionError={connectionError ?? connection.detail} onConnectionError={setConnectionError} onCreatingRoom={setCreatingRoom} session={session} nickname={nickname} onNickname={setNickname} disabled={connection.state === 'connecting'}
+            joined={inRoom} busy={busy || tunnelBusy} server={embeddedServer} tunnel={tunnel} inviteAddress={inviteAddress}
             onInviteAddress={setSelectedInviteAddress} onServerUrl={setServerUrl} onBusy={setBusy} onServer={setEmbeddedServer} onTunnel={setTunnel} onJoinInvitation={joinModeInvitation} />
-          <button className="btn btn--tiny" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>{advancedOpen ? '收起高级设置' : '高级设置（网络与中继）'}</button>
-          {advancedOpen && <>
-          {/* ---- 连接：地址和昵称各一行输入框，其余信息全部让位 ---- */}
-          <section className="panel panel--tight">
-            <div className="row">
-              {!inRoom && (
-                <input
-                  className="field__input field__input--compact"
-                  value={nickname}
-                  onChange={(e) => setNickname(e.target.value)}
-                  maxLength={16}
-                  placeholder={t('conn.nickname')}
-                />
-              )}
-              <button
-                type="button"
-                className={connected ? 'btn btn--ghost btn--shrink' : 'btn btn--primary btn--shrink'}
-                onClick={handleConnect}
-                disabled={busy}
-              >
-                {connected || connection.state === 'connecting' ? t('conn.disconnect') : t('conn.connect')}
-              </button>
-            </div>
-
-            {/* 信令地址默认不露出来：它是「网络详情」—— 傻瓜流（粘贴邀请）会自动填，
-                手动用户点开再填。裸露在外既添乱又是截图泄露面。 */}
-            <div className="row">
-              <button
-                type="button"
-                className="btn btn--tiny"
-                onClick={() => setShowNetField((v) => !v)}
-              >
-                {showNetField ? t('conn.netSettingsHide') : t('conn.netSettings')}
-              </button>
-              {showNetField && <span className="hint hint--dim">{t('conn.serverAddr')}</span>}
-            </div>
-            {showNetField && (
-              <div className="row">
-                <input
-                  className="field__input field__input--compact"
-                  value={serverUrl}
-                  onChange={(e) => setServerUrl(e.target.value)}
-                  disabled={connected || connection.state === 'connecting'}
-                  spellCheck={false}
-                  placeholder={DEFAULT_SIGNALING_URL}
-                  title="信令服务器地址"
-                />
-              </div>
-            )}
-
-            {connection.detail && <p className="hint hint--warn">{connection.detail}</p>}
-
-            {/* 隧道作废是唯一「光看提示不够」的情况：必须有一个能按的按钮。
-                文字已经说清了要做什么，但客人要联系的是「对方」——
-                给他一个「重试连接」按钮只会让他反复点，而那永远不会有变化。
-                主机这边则相反：重开隧道是他自己能立刻做的。 */}
-            {connection.reach === 'tunnel-gone' && connection.isOwnTunnel && (
-              <div className="row">
-                <button
-                  type="button"
-                  className="btn btn--primary btn--tiny"
-                  disabled={tunnelBusy || !tunnel?.available}
-                  onClick={() => void handleToggleTunnel(false).then(() => handleToggleTunnel(true))}
-                >
-                  {tunnelBusy ? '正在重建…' : '重开隧道'}
-                </button>
-                {/* 刻意不写「并复制新邀请」：地址是重启**之后**才拿到的，
-                    那一刻还没有新邀请可复制。按钮名必须只承诺它真做得到的事。 */}
-                <span className="hint hint--dim">重开后地址会变，请把新邀请重新发给对方</span>
-              </div>
-            )}
-
-            {connection.reach === 'tunnel-gone' && !connection.isOwnTunnel && (
-              <p className="hint hint--dim">
-                这是对方那边的问题：让他重开隧道再发一次邀请。你这边不用改任何设置。
-              </p>
-            )}
-          </section>
-
-          {/* ---- 本机信令 + 异地访问：合成一条状态栏，默认收起 ---- */}
-          {embeddedServer && (
-            <section className="panel panel--tight">
-              <div className="collapse__head">
-                <button
-                  type="button"
-                  className="collapse__toggle"
-                  onClick={() => setServerOpen((v) => !v)}
-                >
-                  <span className="collapse__caret">{serverOpen ? '▾' : '▸'}</span>
-                  <span>{t('server.title')}</span>
-                  <span
-                    className={`dot dot--${
-                      embeddedServer.state === 'running' ? 'ok' : 'idle'
-                    }`}
-                  />
-                  <span className="collapse__state">
-                    {t(SERVER_STATE_LABEL[embeddedServer.state])}
-                    {tunnelUrl && t('server.remoteOn')}
-                  </span>
-                </button>
-
-                <label className="switch" title={t('server.enableTitle')}>
-                  <input
-                    type="checkbox"
-                    checked={embeddedServer.enabled}
-                    disabled={serverBusy}
-                    onChange={(e) => void handleToggleServer(e.target.checked)}
-                  />
-                  <span>{t('server.enable')}</span>
-                </label>
-              </div>
-
-              {serverOpen && (
-                <div className="collapse__body">
-                  <p className="hint hint--dim">
-                    {embeddedServer.state === 'running'
-                      ? fmt('server.portInfo', {
-                          port: embeddedServer.port,
-                          stack: embeddedServer.dualStack ? t('server.stackDual') : t('server.stackV4'),
-                        })
-                      : t('server.notListening')}
-                  </p>
-
-                  {embeddedServer.detail && <p className="hint hint--warn">{embeddedServer.detail}</p>}
-
-                  {(embeddedServer.state === 'running' ||
-                    embeddedServer.state === 'port-in-use') && (
-                    <>
-                      {/* 异地访问排在最前：它是唯一实测能跨网络的一条路 */}
-                      {tunnel && (
-                        <div className="tunnel">
-                          <div className="tunnel__head">
-                            <span className="tunnel__title">{t('tunnel.title')}</span>
-                            {tunnel.available ? (
-                              <label className="switch" title={t('tunnel.enableTitle')}>
-                                <input
-                                  type="checkbox"
-                                  checked={tunnel.enabled}
-                                  disabled={tunnelBusy}
-                                  onChange={(e) => void handleToggleTunnel(e.target.checked)}
-                                />
-                                <span>{t('server.enable')}</span>
-                              </label>
-                            ) : (
-                              <span className="tag tag--warn">{t('tunnel.unavailable')}</span>
-                            )}
-                          </div>
-
-                          <p className="hint hint--dim">
-                            {t(TUNNEL_STATE_LABEL[tunnel.state])}
-                            {tunnel.state === 'starting' && !tunnel.detail && t('tunnel.startingHint')}
-                          </p>
-                          {tunnel.detail && <p className="hint hint--warn">{tunnel.detail}</p>}
-
-                          {tunnelUrl && (
-                            <>
-                              <p className="hint hint--dim">{t('tunnel.copyHint')}</p>
-                              <p className="serverurl serverurl--remote">{tunnelUrl}</p>
-                              <p className="hint hint--warn">{t('tunnel.publicWarn')}</p>
-                            </>
-                          )}
-                        </div>
-                      )}
-
-                      {embeddedServer.lanUrls.length > 0 && (
-                        <>
-                          <p className="hint hint--dim">{t('tunnel.lanHint')}</p>
-                          {embeddedServer.lanUrls.map((url) => (
-                            <p key={url} className="serverurl">
-                              {url}
-                            </p>
-                          ))}
-                        </>
-                      )}
-
-                      {publicServerUrls.length > 0 && (
-                        <>
-                          <p className="hint hint--dim">{t('tunnel.publicHint')}</p>
-                          {publicServerUrls.map((url) => (
-                            <p key={url} className="serverurl serverurl--dim">
-                              {url}
-                            </p>
-                          ))}
-                        </>
-                      )}
-
-                      <p className="hint hint--dim">{t('tunnel.firewall')}</p>
-                    </>
-                  )}
-
-                  {/* ---- TURN 中继 ----
-                      排在地址列表之后：地址是「怎么连」，TURN 是「连不上时的兜底」，
-                      不该和日常要用的信息抢位置。 */}
-                  <div className="turn">
-                    <div className="turn__head">
-                      <span className="tunnel__title">{t('turn.title')}</span>
-                      <span
-                        className={`dot dot--${
-                          turnFormatHard
-                            ? 'warn'
-                            : turnState === 'ready'
-                              ? 'ok'
-                              : turnState === 'error'
-                                ? 'warn'
-                                : 'idle'
-                        }`}
-                      />
-                      <span className="collapse__state">
-                        {t(
-                          turnFormatHard
-                            ? 'turn.stateBadFormat'
-                            : turnState === 'ready'
-                              ? 'turn.stateReady'
-                              : turnState === 'error'
-                                ? 'turn.stateError'
-                                : 'turn.stateOff',
-                        )}
-                        {turnIssued > 0 && fmt('turn.issued', { n: turnIssued })}
-                      </span>
-                    </div>
-
-                    {turnSource === 'env' && (
-                      <p className="hint hint--dim">{t('turn.fromEnv')}</p>
-                    )}
-
-                    {/* 格式问题排在 turnError 之前：它比「签发失败」更接近病因
-                        （填错就填错了，不会因为重试而变好）。 */}
-                    {turnFormatIssues.map((issue) => (
-                      <p
-                        key={issue.field}
-                        className={issue.suspect ? 'hint hint--dim' : 'hint hint--warn'}
-                      >
-                        {issue.message}
-                      </p>
-                    ))}
-
-                    {turnError && <p className="hint hint--warn">{turnError}</p>}
-
-                    {turnOneShotSecret && (
-                      <div className="turn__oneshot">
-                        <p className="hint hint--warn">{t('turn.oneShotWarn')}</p>
-                        <p className="serverurl serverurl--remote">{turnOneShotSecret}</p>
-                        <p className="hint hint--dim">{t('turn.oneShotHint')}</p>
-                      </div>
-                    )}
-
-                    {turnConfigured ? (
-                      <>
-                        <p className="hint hint--dim">
-                          {fmt('turn.configured', { id: turnKeyIdMasked || '------' })}
-                        </p>
-                        <div className="row">
-                          <button
-                            type="button"
-                            className="btn"
-                            disabled={turnBusy}
-                            onClick={() => void handleTurnClear()}
-                          >
-                            {t('turn.clear')}
-                          </button>
-                        </div>
-                        <p className="hint hint--dim">{t('turn.clearHint')}</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="hint hint--dim">{t('turn.offHint')}</p>
-
-                        {/* 两条路：自动建（要账号凭据）或手工填（已有 key） */}
-                        <div className="turn__row">
-                          <input
-                            className="input"
-                            type="text"
-                            placeholder={t('turn.accountIdPlaceholder')}
-                            value={turnAccountId}
-                            onChange={(e) => setTurnAccountId(e.target.value)}
-                            disabled={turnBusy}
-                            title={t('turn.accountIdTitle')}
-                          />
-                          <input
-                            className="input"
-                            type="password"
-                            placeholder={t('turn.apiTokenPlaceholder')}
-                            value={turnApiToken}
-                            onChange={(e) => setTurnApiToken(e.target.value)}
-                            disabled={turnBusy}
-                            title={t('turn.apiTokenTitle')}
-                          />
-                        </div>
-                        <div className="row">
-                          <button
-                            type="button"
-                            className="btn btn--primary"
-                            disabled={turnBusy || !turnAccountId.trim() || !turnApiToken.trim()}
-                            onClick={() => void handleTurnCreate()}
-                            title={t('turn.createTitle')}
-                          >
-                            {t('turn.create')}
-                          </button>
-                        </div>
-                        <p className="hint hint--dim">{t('turn.createHint')}</p>
-
-                        <details className="turn__manual">
-                          <summary>{t('turn.manualToggle')}</summary>
-                          <div className="turn__row">
-                            <input
-                              className="input"
-                              type="text"
-                              placeholder={t('turn.keyIdPlaceholder')}
-                              value={turnKeyIdInput}
-                              onChange={(e) => setTurnKeyIdInput(e.target.value)}
-                              disabled={turnBusy}
-                            />
-                            <input
-                              className="input"
-                              type="password"
-                              placeholder={t('turn.keySecretPlaceholder')}
-                              value={turnKeySecretInput}
-                              onChange={(e) => setTurnKeySecretInput(e.target.value)}
-                              disabled={turnBusy}
-                            />
-                          </div>
-                          <div className="row">
-                            <button
-                              type="button"
-                              className="btn"
-                              disabled={
-                                turnBusy || !turnKeyIdInput.trim() || !turnKeySecretInput.trim()
-                              }
-                              onClick={() => void handleTurnSaveManual()}
-                            >
-                              {t('turn.save')}
-                            </button>
-                          </div>
-                        </details>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
-            </section>
-          )}
-
-          </>}
-          {/* ---- 房间 ---- */}
-          {(inRoom || advancedOpen) && <section className="panel panel--tight">
+          {!inRoom && tunnel?.enabled && (tunnel.state === 'starting' || tunnel.state === 'running') && <button type="button" className="btn btn--ghost" disabled={busy || tunnelBusy} onClick={() => void handleToggleTunnel(false)}>
+            {t('room.closeInvite')}
+          </button>}
+          {room && <section className="panel panel--tight">
             <h2>{t('room.title')}</h2>
 
-            {!inRoom ? (
-              <>
-                <div className="row">
-                  <button
-                    type="button"
-                    className="btn btn--primary"
-                    onClick={() => void run(async () => {
-                      setConnectionRole('host');
-                      setConnectionError(null);
-                      setCreatingRoom(true);
-                      try { await session.createRoom(nickname); }
-                      catch (err) { setConnectionError(ShareSession.describeError(err)); throw err; }
-                      finally { setCreatingRoom(false); }
-                    })}
-                    disabled={!connected || busy}
-                  >
-                    {t('room.create')}
-                  </button>
-                  <input
-                    className="field__input field__input--code field__input--compact"
-                    value={joinCode}
-                    onChange={(e) => handleJoinInputChange(e.target.value)}
-                    placeholder={t('room.codePlaceholder')}
-                    spellCheck={false}
-                    title={t('room.codeTitle')}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn--shrink"
-                    onClick={() => {
-                      setJoinError(null);
-                      void run(async () => {
-                        try {
-                          await session.joinRoom(joinCode.trim().toUpperCase(), nickname);
-                        } catch (err) {
-                          // run() 会照旧把它写进日志面板；这里额外提到界面上，
-                          // 否则满员被拒只表现成「点了加入没反应」
-                          setJoinError(ShareSession.describeError(err));
-                          throw err;
-                        }
-                      });
-                    }}
-                    disabled={!connected || busy || !joinCode.trim()}
-                  >
-                    {t('room.join')}
-                  </button>
-                </div>
+            <div className="roomcode">
+              <span className="roomcode__value">{room.roomCode}</span>
+            </div>
 
-                {joinError && <p className="hint hint--warn">{t('room.joinFailed')}{joinError}</p>}
-                {!connected && <p className="hint hint--warn">{t('room.needSignaling')}</p>}
-              </>
-            ) : (
-              <>
-                <div className="roomcode">
-                  <span className="roomcode__value">{room.roomCode}</span>
-                </div>
-
-                <ul className="members">
-                  {members.map((peer) => {
-                    const isSelf = peer.peerId === room.self.peerId;
-                    const link = links[peer.peerId];
-                    return (
-                      <li key={peer.peerId} className="member">
-                        <span className="member__name">
-                          {peer.nickname}
-                          {isSelf && <span className="member__self">{t('room.memberSelf')}</span>}
+            <ul className="members">
+              {members.map((peer) => {
+                const isSelf = peer.peerId === room.self.peerId;
+                const link = links[peer.peerId];
+                return (
+                  <li key={peer.peerId} className="member">
+                    <span className="member__name">
+                      {peer.nickname}
+                      {isSelf && <span className="member__self">{t('room.memberSelf')}</span>}
+                    </span>
+                    <span className="member__tags">
+                      {peer.isHost && <span className="tag tag--host">{t('room.tagHost')}</span>}
+                      {isSelf && sharing && <span className="tag tag--live">{t('room.tagSharing')}</span>}
+                      {!isSelf && (
+                        <span className={`tag tag--link tag--link-${link?.state ?? 'new'}`}>
+                          {t(LINK_LABEL[link?.state ?? 'new'])}
                         </span>
-                        <span className="member__tags">
-                          {peer.isHost && <span className="tag tag--host">{t('room.tagHost')}</span>}
-                          {isSelf && sharing && <span className="tag tag--live">{t('room.tagSharing')}</span>}
-                          {!isSelf && (
-                            <span className={`tag tag--link tag--link-${link?.state ?? 'new'}`}>
-                              {t(LINK_LABEL[link?.state ?? 'new'])}
-                            </span>
-                          )}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            {roomConnectionError && <p className="hint hint--warn" role="alert">{roomConnectionError}</p>}
 
-                <button
-                  type="button"
-                  className="btn btn--ghost"
-                  onClick={() => void run(() => session.leaveRoom())}
-                  disabled={busy}
-                >
-                  {t('room.leave')}
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              className="btn btn--ghost"
+              onClick={() => void run(() => session.leaveRoom())}
+              disabled={busy}
+            >
+              {t('room.leave')}
+            </button>
           </section>}
 
           </div>
           <div id="sidebar-page-share" className="sidebar-page" role="tabpanel" aria-labelledby="sidebar-tab-share" hidden={sidePage !== 'share'}>
-          <VoicePanel session={session} busy={busy} visible={sidePage === 'share'} run={run} binding={voiceBinding} setBinding={setVoiceBinding} recording={voiceRecording} setRecording={setVoiceRecording} error={voiceHotkeyError} />
-
           {/* ---- 共享 ---- */}
           <section className="panel panel--tight">
             <h2>{t('share.title')}</h2>
@@ -2022,9 +1502,6 @@ export default function App() {
                       : audioMode === 'none'
                         ? t('audio.tag.none')
                         : t('share.audioOff')}
-                  </span>
-                  <span className={micEnabled ? 'tag tag--live' : 'tag'}>
-                    {micEnabled ? t('share.micOn') : t('share.micOff')}
                   </span>
                 </p>
 
@@ -2061,7 +1538,6 @@ export default function App() {
                         {t('audioFail.cancel')}
                       </button>
                     </div>
-                    <p className="hint hint--dim">{t('audioFail.hint')}</p>
                   </div>
                 )}
 
@@ -2082,7 +1558,7 @@ export default function App() {
                     onClick={() => void (isTauri ? pickSource('webview-display') : toggleSourcePicker())}
                     disabled={busy}
                   >
-                    {isTauri ? '重新选择要共享的窗口或屏幕' : pickerOpen ? t('share.pickHide') : t('share.pickMore')}
+                    {isTauri ? t('share.pickAgain') : pickerOpen ? t('share.pickHide') : t('share.pickMore')}
                   </button>
                 </div>
 
@@ -2122,9 +1598,6 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                <p className="hint hint--dim">{t('share.fpsHint')}</p>
-                {resolutionControl}
-                {bitrateControl}
 
                 {(pickerOpen || isTauri) && sourceError && <p className="hint hint--warn">{sourceError}</p>}
                 {pickerOpen && sourceList}
@@ -2150,7 +1623,7 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                <p className="hint hint--dim">{t(isTauri ? 'share.modeTauriHint' : 'share.modeDefaultHint')}</p>
+                {isTauri && audioModeChoice === 'system' && <p className="hint hint--dim">{t('share.modeTauriHint')}</p>}
 
                 {/* 未共享时也可预设帧率：只记偏好，startShare 时应用 */}
                 <div className="row row--modes" role="radiogroup" aria-label={t('share.fpsAria')}>
@@ -2168,8 +1641,6 @@ export default function App() {
                   ))}
                 </div>
 
-                {resolutionControl}
-                {bitrateControl}
                 <div className="row">
                   <button
                     type="button"
@@ -2177,7 +1648,7 @@ export default function App() {
                     onClick={() => void (isTauri ? pickSource('webview-display') : refreshSources())}
                     disabled={!inRoom}
                   >
-                    {isTauri ? '选择要共享的窗口或屏幕' : t('share.enumerate')}
+                    {isTauri ? t('share.pickDisplay') : t('share.enumerate')}
                   </button>
                   <button
                     type="button"
@@ -2195,42 +1666,15 @@ export default function App() {
                   </button>
                 </div>
 
-                {!inRoom && <p className="hint hint--dim">{t('share.needRoom')}</p>}
                 {sourceError && <p className="hint hint--warn">{sourceError}</p>}
                 {sourceList}
               </>
             )}
+            {qualityControl}
           </section>
+          <VoicePanel session={session} busy={busy} visible={sidePage === 'share'} run={run} binding={voiceBinding} setBinding={setVoiceBinding} recording={voiceRecording} setRecording={setVoiceRecording} error={voiceHotkeyError} />
 
           </div>
-          {/* ---- 日志：默认收起 ---- */}
-          <section className="panel panel--tight">
-            <div className="collapse__head">
-              <button
-                type="button"
-                className="collapse__toggle"
-                onClick={() => setLogsOpen((v) => !v)}
-              >
-                <span className="collapse__caret">{logsOpen ? '▾' : '▸'}</span>
-                <span>{t('log.title')}</span>
-                <span className="badge">{state.logs.length}</span>
-              </button>
-            </div>
-
-            {logsOpen && (
-              <div className="logs logs--short">
-                {state.logs.length === 0 ? (
-                  <p className="hint hint--dim">{t('log.empty')}</p>
-                ) : (
-                  state.logs.map((line, i) => (
-                    <div key={`${i}-${line}`} className="logs__line">
-                      {line}
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
-          </section>
           </div>
         </div>
         )}
@@ -2281,9 +1725,8 @@ export default function App() {
           </div>}
           {!inRoom ? (
             <div className="stage__empty">
-              <h2>和朋友一起看，一起玩</h2>
-              <p>① 在“房间连接”创建或加入 → ② 到“屏幕共享”选择屏幕或窗口</p>
-              <p className="hint hint--dim">有朋友的邀请？选择“加入房间”并粘贴，信令与音视频配置会自动读取。</p>
+              <h2>{t('stage.noRoom')}</h2>
+              <p>{t('stage.noRoomHint')}</p>
             </div>
           ) : focusedPeerId ? (
             <div className="stage stage--focused">
@@ -2439,7 +1882,6 @@ function VideoTile({
         onToggleFocus ? ' tile--clickable' : ''
       }`}
       onDoubleClick={onToggleFocus}
-      title={onToggleFocus ? t('tile.focusTitle') : undefined}
     >
       {/*
         有角色音轨时把 video 元素静掉，声音交给 `RemoteAudioOutlet` 的两条 audio

@@ -44,7 +44,7 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
   recording: boolean; setRecording: (recording: boolean) => void; error: string | null;
 }) {
   const state = useSyncExternalStore(session.subscribe, session.getState);
-  const { micEnabled, micTransmitting, micError, micSettings, voiceMode, room } = state;
+  const { micEnabled, micTransmitting, micError, voiceMode, room } = state;
   const [candidate, setCandidate] = useState<VoiceBinding | null>(null);
   const [keyError, setKeyError] = useState(false);
   const recordRef = useRef<HTMLDivElement>(null);
@@ -101,9 +101,6 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
       </div>}
       {error && <p className="hint hint--warn" data-voice-key-error>{error}</p>}
     </>}
-    {micEnabled && micSettings && <p className="hint hint--dim">
-      {t('mic.statsEcho')} {micSettings.echoCancellation ? t('mic.on2') : t('mic.off2')} · {t('mic.statsNs')} {micSettings.noiseSuppression ? t('mic.on2') : t('mic.off2')} · {t('mic.statsAgc')} {micSettings.autoGainControl ? t('mic.on2') : t('mic.off2')}
-    </p>}
     {micError && <p className="hint hint--warn">{micError}</p>}
   </section>;
 }

@@ -27,26 +27,17 @@ full-room test with synthetic sources: all 7 remote streams decoded, frames
 flowing — the UI and the connections hold up; the only variable left is the
 real network.
 
-Current version: v1.3.0. The roadmap (including a few things that deliberately
-won't be built) lives in `docs/ROADMAP.md`.
+The desktop client uses Tauri and Windows WebView2. See the [Tauri client notes](apps/tauri/README.md) and [roadmap](docs/ROADMAP.md).
 
 ## Features
 
 - **One-paste invites**: the host clicks "copy invite"; the friend pastes the
   whole message into the room code box — address, connection and joining all
   happen automatically. Nothing to type
-- **Window sharing**: a thumbnail list of windows, click to share. Exclusive
-  fullscreen can't be captured (a Windows limitation); if a game doesn't offer
-  borderless windowed mode, the "borderless" button in the list converts it for
-  you — click again to restore
-- **Three audio modes**: only the shared app's audio (captured per process, so
-  notification pings stay out) / the whole PC minus GameShare itself / silence.
-  Switchable before or during sharing
+- **Screen and audio sharing** through the WebView2 picker. Audio availability depends on the selected source and the tracks WebView2 provides.
 - **Per-peer volume control**: each friend's voice and game audio have separate
   sliders, affecting only what you hear
-- **Float overlay**: `Ctrl+Alt+G` collapses the streams into a mini window
-  above your fullscreen game — no focus stealing, draggable, opacity
-  adjustable, and each stream can be split into its own tile
+- **Float overlay** opens an always-on-top window for each shared stream, with independent volume and mute controls.
 - **Double-click to enlarge**: one stream fills the stage, the rest collapse
   into a thumbnail strip, and quality rebalances automatically
 - **Selectable frame rate** (30 / 60 / 120) with bitrate that adapts to the
@@ -59,7 +50,7 @@ This tool has no accounts and no authentication: whether a stranger can join
 depends entirely on whether the room code leaks. So —
 
 1. **Never share the tunnel address anywhere public.** The `https://*.trycloudflare.com`
-   address from the "remote access" switch is a public entrance to your home
+   address created by the Cloudflare tunnel is a public entrance to your home
    network. Send it in a private chat to the people you're playing with — not
    in a group, not on a forum, not on any web page. The room code is six
    characters, about a billion combinations, and the server does not
@@ -68,8 +59,7 @@ depends entirely on whether the room code leaks. So —
 2. **Same for the room code — private chat only.** Anyone who guesses it
    immediately sees your shared screen. There is no confirmation prompt and no
    kick button.
-3. **Close the tunnel when you're done.** The shorter it's up, the smaller the
-   window. The switch is off by default — keep it that way.
+3. **Close the tunnel when you're done.** Leave the room and select **Close temporary invite link**, or quit GameShare.
 4. **Want to serve strangers? Add authentication first.** The current design
    assumes a small group that trusts each other. The signaling server is a
    plain Node service, and modifying it is straightforward.
@@ -87,41 +77,17 @@ either end. This is the most common first-day stumble.
 
 ### Same LAN
 
-1. The host opens GameShare, enables the **built-in signaling server** in the
-   sidebar panel, then clicks **create room**;
-2. Click **copy invite** next to the room code and send the text to your friend
-   (WeChat, QQ, anything);
-3. Your friend pastes the whole message into the **room code box** — the
-   address fills in, the client connects and joins automatically. Want a
-   custom nickname? Type it before pasting.
-
-> If both clients run on the same machine, the first one takes port 8080 and
-> the second shows "port in use" — that's fine, it still works as a client.
-> The old manual flow (typing the address by hand) lives in the
-> "network settings" fold.
+1. Select **Create Room**, choose direct IP for signaling and LAN / UU for media, then select a local address your friend can reach.
+2. Create the room and use **Copy invite** above the sidebar to send the complete invitation to your friend.
+3. Your friend chooses **Join Room**, pastes the invitation, and selects **Connect and Join**. They can also expand the manual address and room code fields.
 
 ### Across networks (remote)
 
-The host turns on the "remote access" switch and waits for the client to start
-the tunnel on its own (the packaged build ships with `cloudflared.exe`; only
-source mode needs `tools/cloudflared.exe`, see `docs/REMOTE-TESTING.md`).
-Then it's the same: create room → copy invite → send it over. Your friend
-pastes it and is in. **Turn the switch off when you're done.**
+Create a room with Cloudflare tunneling selected for signaling. When the temporary address is ready, copy and send the invitation. The portable build includes `cloudflared.exe`.
 
 ### Sharing a window with sound
 
-In the room, click "enumerate windows / screens" and pick a window from the
-list. Audio has three modes:
-
-| Mode | What it does |
-| --- | --- |
-| **This app only** (default for windows) | Sends only that app's audio (including child processes) — notification pings stay out. Not available for full-screen sources |
-| **Whole PC** | Sends all system output except GameShare itself. Echo suppression is limited; headphones are still a good idea |
-| **Silent** | Video only |
-
-If system audio can't be captured, it won't quietly pick another mode: the
-video keeps going and you get a prompt with three choices (switch to whole-PC
-/ continue silent / cancel sharing).
+In the room, open the screen-sharing panel and choose a window or screen. To share system audio, select **Whole PC**, then select the entire screen in the WebView2 picker and enable system audio. Per-process audio capture and the borderless-window action are available in the legacy Electron client.
 
 Each remote tile has a volume button — voice and game audio adjust separately.
 
@@ -136,41 +102,33 @@ more quality, the others step down to save upload.
 
 ### The float overlay (for fullscreen games)
 
-Press `Ctrl+Alt+G`: the shared streams collapse into a mini window above your
-game — no focus stealing, draggable, opacity adjustable, and each stream can
-become its own tile. The game needs to be in **borderless windowed** mode —
-exclusive fullscreen can't be captured or overlaid, and that's a Windows
-limitation.
+Enable **Float overlay** in the title bar to open one always-on-top window per shared stream. Each window has its own volume and mute controls. Use **borderless windowed** mode in the game to allow capture and overlays.
 
 ## Building from source
 
-Requirements: **Node.js ≥ 20**, Windows 10 / 11.
+Use Windows 10 or 11 x64, Node.js 22.12 or later, Rust with MSVC, the Windows SDK, and WebView2 Evergreen. Run these commands from the repository root.
 
 ```bash
-npm install            # install all workspace dependencies
-npm run dev:desktop    # run the client (Vite + Electron, hot reload)
+npm ci
+npm run dev:desktop    # start Tauri with Vite hot reload
+npm run build:desktop  # compile a Tauri test executable
 ```
 
 If you'd rather not open a terminal, double-click the bat files in the repo root:
 
 | File | What it does |
 | --- | --- |
-| `run.bat` | Launch the latest packaged build (no build, no install) |
-| `dev.bat` | Run from source (Vite dev server + Electron) |
-| `build-exe.bat` | One-click packaging, about 40 seconds, prints the output path |
-| `diagnose-capture.bat` | Diagnose "the window is running but not in the capture list" |
+| `run.bat` | Launch the latest portable Tauri release in `../release` |
+| `dev.bat` | Start the Tauri client from source |
+| `build-exe.bat` | Compile a Tauri test executable |
+| `diagnose-capture.bat` | Diagnose window enumeration in the legacy Electron client |
 | `tunnel.bat` | Manually start the remote tunnel (the client already has a switch) |
 
-Build output lands in `apps/desktop/release/`: `GameShare Setup 1.3.0.exe`
-(installer) or `win-unpacked/GameShare.exe` (portable).
-
-> The bat files look for node.exe via the `GAMESHARE_NODE_DIR` environment
-> variable, then PATH. Machine-specific build pitfalls are documented in
-> `docs/BUILD-NOTES.md`.
+The default test executable is `.cache/tauri-target/x86_64-pc-windows-msvc/release/gameshare-tauri.exe`. The root `npm run build` also compiles the standalone signaling service. Installers and portable releases are packaged separately.
 
 ## The test suite
 
-Every feature ships with scripts that judge pass/fail on their own:
+See the [Tauri client notes](apps/tauri/README.md) for its integration test. Run `npm run setup:electron` before using Electron regression tests. To launch the legacy client from source, run `npm run dev:electron`.
 
 ```bash
 npm run smoke              # signaling: 17 cases (rooms, limits, forgery, cleanup, heartbeat)
@@ -257,7 +215,9 @@ Relay traffic goes through Cloudflare and is **billed by egress**
 allowance; STUN is free and unlimited). Everything still works without it —
 you just won't connect on the four network types listed above.
 
-**Shortest path: two fields in the app (since 1.5.0)**
+Tauri can use TURN credentials issued by a compatible signaling server. Configure TURN on the host's signaling service.
+
+**Configure using the legacy Electron client**
 
 1. Open the client → expand the "Local service" panel → find "TURN relay";
 2. Fill in two fields: your **Cloudflare account ID** and an **API token with

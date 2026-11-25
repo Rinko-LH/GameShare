@@ -12,7 +12,9 @@ use tauri::{
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 
 fn local_page(url: &Url) -> bool {
-    url.scheme() == "http" && url.host_str() == Some("tauri.localhost") && url.port().is_none()
+    url.scheme() == "http"
+        && (matches!((url.host_str(), url.port()), (Some("tauri.localhost"), None))
+            || (tauri::is_dev() && url.host_str() == Some("127.0.0.1") && url.port() == Some(1420)))
 }
 
 fn open_link(url: Url) {

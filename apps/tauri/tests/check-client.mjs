@@ -73,7 +73,7 @@ async function launch(name, legacy = false) {
 }
 
 async function attach(target) {
-  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  const socket = new globalThis.WebSocket(target.webSocketDebuggerUrl);
   sockets.push(socket);
   await new Promise((resolve, reject) => {
     socket.addEventListener('open', resolve, { once: true });
@@ -122,6 +122,10 @@ try {
   }
   const host = await launch('host');
   const hostEval = host.evaluate;
+  assert.equal(await hostEval('document.querySelector("#sidebar-page-room").textContent.includes("高级设置")'), false);
+  assert.deepEqual(await hostEval('[...document.querySelectorAll(".quality-slider__labels > span")].map(node => node.textContent)'), ['流畅', '标清', '高清']);
+  assert.equal(await hostEval('document.querySelector("[data-video-quality-auto]").getAttribute("aria-pressed")'), 'true');
+  assert.equal(await hostEval('document.querySelector("[data-video-quality]").dataset.videoQuality'), 'auto');
   const voice = await hostEval('window.gameShare.voiceHotkey.configure({active:true,binding:{code:"F8",ctrl:false,alt:false,shift:false}})');
   assert.equal(voice.error, null);
   assert.equal(voice.pressed, false);
@@ -160,6 +164,7 @@ try {
     throw error;
   }
   assert.match(room, /^[A-Z2-9]{6}$/);
+  assert.equal(await hostEval('document.querySelector(".connection-config-form")'), null, 'Room setup must be hidden after joining');
   const status = await hostEval('window.gameShare.server.getStatus()');
   assert.equal(status.state, 'running', 'Test must use the Rust signaling server');
   const health = await (await fetch(status.localUrl + '/health')).json();
@@ -175,7 +180,7 @@ try {
   const wrongRoom = await observer.timeout(3000).emitWithAck('join-room', { roomCode: 'bad', nickname: 'observer' });
   assert.equal(wrongRoom.error.code, 'ROOM_NOT_FOUND');
 
-  let invitation;
+  await hostEval(`window.gameShare.clipboard.writeText = async text => { window.__copiedInvite = text; return true; }`);
   if (useCloudflare) {
     let lastDetail;
     const tunnel = await until(async () => {
@@ -193,45 +198,79 @@ try {
     }
     assert.match(tunnel.url, /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/);
     address = tunnel.url;
-    // "running" already means the native client verified the public health endpoint.
-    // The guest WebViews below exercise the actual public Socket.IO connection.
-    await hostEval(`window.gameShare.clipboard.writeText = async text => { window.__copiedInvite = text; return true; }`);
-    await until(async () => {
-      try { await clickText(hostEval, '复制邀请'); } catch { return false; }
-      return hostEval('!!window.__copiedInvite');
-    }, 'copy the public invitation');
-    invitation = await hostEval('window.__copiedInvite');
-    const encoded = invitation.match(/GS3\.([a-zA-Z0-9+/_=-]+)/)?.[1];
-    assert.ok(encoded);
-    const decoded = JSON.parse(Buffer.from(encoded, 'base64').toString());
-    assert.equal(decoded.server, address);
-    assert.equal(decoded.room, room);
-    assert.equal(decoded.signaling, 'cloudflare');
     assert.deepEqual(await hostEval('[...new Set(window.__tunnelStates)]'), ['starting', 'running']);
-    console.log('PASS: Cloudflare Quick Tunnel ready, verified health, invitation contains the public address');
-  } else {
-    invitation = 'GS3.' + Buffer.from(JSON.stringify({
-      server: address, room, signaling: 'ip', mediaPolicy: 'local-auto',
-    })).toString('base64');
+    console.log('PASS: Cloudflare Quick Tunnel ready, verified health');
   }
+  await until(async () => {
+    try { await clickText(hostEval, '复制邀请'); } catch { return false; }
+    return hostEval('!!window.__copiedInvite');
+  }, 'copy the room invitation');
+  const invitation = await hostEval('window.__copiedInvite');
+  const encoded = invitation.match(/GS3\.([a-zA-Z0-9+/_=-]+)/)?.[1];
+  assert.ok(encoded);
+  const decoded = JSON.parse(Buffer.from(encoded, 'base64').toString());
+  assert.equal(decoded.server, address);
+  assert.equal(decoded.room, room);
+  assert.equal(decoded.signaling, useCloudflare ? 'cloudflare' : 'ip');
   const guests = [];
   for (let i = 1; i <= 3; i += 1) {
-    const guest = await launch(`guest-${i}`, i === 3 && Boolean(electronExe));
+    const legacy = i === 3 && Boolean(electronExe);
+    const guest = await launch(`guest-${i}`, legacy);
     guests.push(guest);
-    await fill(guest.evaluate, 'input[placeholder="朋友会看到的名字"]', `Guest ${i}`);
+    await fill(guest.evaluate, legacy ? 'input[placeholder="朋友会看到的名字"]' : 'input[name=nickname]', `Guest ${i}`);
     await guest.evaluate('document.querySelector("input[name=connection-role][value=guest]").click()');
     await fill(guest.evaluate, '[data-invitation]', invitation);
     await clickText(guest.evaluate, '连接并加入');
     await until(() => guest.evaluate(`document.querySelector('.roomcode__value')?.textContent.trim() === ${JSON.stringify(room)}`), `guest ${i} joined room`);
     const useRealCapture = i === 1 && captureTitle;
+    if (i === 1 && !useRealCapture) {
+      await guest.evaluate(`(() => {
+        // The built-in test pattern is 360p. Use a larger canvas to exercise downscaling.
+        const captureStream = HTMLCanvasElement.prototype.captureStream;
+        HTMLCanvasElement.prototype.captureStream = function (...args) {
+          if (this.width === 640 && this.height === 360) {
+            this.width = 1280;
+            this.height = 720;
+          }
+          return captureStream.apply(this, args);
+        };
+        const setParameters = RTCRtpSender.prototype.setParameters;
+        RTCRtpSender.prototype.setParameters = async function (parameters) {
+          await setParameters.call(this, parameters);
+          const encoding = parameters.encodings[0];
+          if (this.track?.kind === 'video' && encoding) window.__videoEncoding = encoding;
+        };
+      })()`);
+      await fill(guest.evaluate, '[data-video-quality]', '0');
+      assert.equal(await guest.evaluate(`(() => {
+        const slider = document.querySelector('[data-video-quality]');
+        return ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].every(key =>
+          !slider.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })));
+      })()`), true);
+    }
     if (useRealCapture) console.log(`在 WebView2 选源窗口中选择测试窗口 ${captureTitle}`);
-    await clickText(guest.evaluate, useRealCapture ? '选择要共享的窗口或屏幕' : '测试源');
+    await clickText(guest.evaluate, useRealCapture ? '选择窗口或屏幕' : '测试源');
     try {
       await until(() => guest.evaluate('Array.from(document.querySelectorAll("button")).some(b => b.textContent.trim() === "停止共享" && b.getClientRects().length)'),
         `guest ${i} is sharing`, useRealCapture ? 90000 : undefined);
     } catch (error) {
       console.error(await guest.evaluate('Array.from(document.querySelectorAll(".hint--warn")).map(b => b.textContent)'));
       throw error;
+    }
+    if (i === 1 && !useRealCapture) {
+      const smooth = await until(() => guest.evaluate('window.__videoEncoding?.scaleResolutionDownBy === 2 && window.__videoEncoding'), 'apply Smooth video encoding');
+      await fill(guest.evaluate, '[data-video-quality]', '1');
+      const standard = await until(() => guest.evaluate('window.__videoEncoding?.maxBitrate === 1500000 && window.__videoEncoding'), 'apply SD video encoding');
+      assert.ok(standard.scaleResolutionDownBy > 1 && standard.scaleResolutionDownBy < smooth.scaleResolutionDownBy);
+      await guest.evaluate('document.querySelector("[data-video-quality-auto]").click()');
+      const automatic = await until(() => guest.evaluate('window.__videoEncoding?.maxBitrate === 2000000 && window.__videoEncoding'), 'apply Auto video encoding');
+      assert.equal(automatic.scaleResolutionDownBy, 1);
+      await fill(guest.evaluate, '[data-video-quality]', '2');
+      const hd = await until(() => guest.evaluate('window.__videoEncoding?.maxBitrate === 4000000 && window.__videoEncoding'), 'apply HD video encoding');
+      assert.equal(hd.scaleResolutionDownBy, 1);
+      assert.equal(hd.maxFramerate, smooth.maxFramerate);
+      assert.equal(await guest.evaluate('localStorage.getItem("gs.videoQuality")'), 'hd');
+      console.log('PASS: quality slider updates live scaling and bitrate while keeping frame rate');
     }
     if (useRealCapture) {
       const surfaces = await guest.evaluate(`[...document.querySelectorAll('video')].flatMap(video =>

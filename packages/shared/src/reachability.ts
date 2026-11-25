@@ -140,7 +140,7 @@ export function describeReachability(
       if (opts.isOwnTunnel) {
         return (
           `隧道地址 ${host} 已经失效了。Cloudflare 的临时隧道每次重启都会换一个新地址，` +
-          `之前发出的邀请全部作废。打开左侧「异地访问」重新开隧道，然后把**新地址**的邀请重新发给对方。`
+          `请重新准备邀请网址，再把新地址的邀请发给对方。`
         );
       }
       return (
@@ -152,8 +152,7 @@ export function describeReachability(
     case 'unreachable':
       if (opts.isOwnTunnel) {
         return (
-          `连不上 ${host}。隧道开关可能已经关掉了，或者 cloudflared 没在跑。` +
-          `打开左侧「异地访问」开关重建隧道即可。`
+          `连不上 ${host}。请检查临时邀请网址，必要时重新准备网址并发送新邀请。`
         );
       }
       return (

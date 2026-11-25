@@ -235,8 +235,9 @@
 
 ### 我要改「打包 / 交付」
 
+- **Tauri**：先用 `npm run build:desktop` 编译测试 EXE。集成测试见 [Tauri 客户端说明](../apps/tauri/README.md)。
 - **必读**：`.workbuddy/memory/ENV-NOTES.md` §交付与打包
-- **判据**：统一走 `npm run build:exe`（或双击 `build-exe.bat`），别直调 electron-builder。
+- **旧版 Electron**：用 `npm run build:electron:exe` 打包。
   独立部署的信令产物**必须 CJS**（`bundle:signaling`）—— ESM 下 socket.io 会抛错。
 - **易踩**：`package.json` 的 `build` 对象里**不能写 `//xxx` 注释键**，electron-builder 直接拒收。
   `release/` 常被上次的残留句柄锁住，会自动顺延成 `release-2`、`release-3`（正常，别管）。
@@ -247,7 +248,7 @@
   漏了症状只是「按应用共享声音不可用」，与「这台机器上没有 koffi」长得一样 ——
   配置写着 ≠ 跑过：`release-4` 就是配置补上之后**从没打过一次包**的那一份，
   `resources/` 下根本没有 `audio-ffi`。
-- **必跑**：`npm run build:exe` + **`npm run check:embedded`**（动了内置信令或打包配置时**必须**跑，
+- **旧版 Electron 验收**：`npm run build:electron:exe` + **`npm run check:embedded`**（动了内置信令或打包配置时**必须**跑，
   开发通过 ≠ 打包后通过）+ `npm run check:app-audio`（其中两条会直接去**最新那份产物**里找
   `audio-ffi` 并真 `require` 一次；用 `GAMESHARE_CHECK_RELEASE_DIR=release-N` 可以指定看哪一份）
 
@@ -412,7 +413,8 @@
 | 只跑 P2P 链路层 | `npm run smoke:p2p` |
 | 类型检查（四个 workspace） | `npm run typecheck` |
 | 代码风格 | `npm run lint` |
-| 打包（含安装包） | `npm run build:exe` |
+| 编译 Tauri 测试 EXE | `npm run build:desktop` 或双击 `build-exe.bat` |
+| 打包旧版 Electron 安装器 | `npm run build:electron:exe` |
 | **打包后**验证内置信令 | `npm run check:embedded` |
 | 验证独立部署的信令产物（必须 CJS） | `npm run check:standalone` |
 | 验证 TURN 凭证签发与端口过滤 | `npm run check:turn` |
@@ -426,9 +428,8 @@
 | 验证隧道（异地访问那条路） | `npm run check:tunnel` |
 | 本机 P2P 能力诊断（输出结论，不判定） | `npm run check:network` |
 | STUN 节点体检（走 Chromium ICE） | `npm run check:stun` |
-| 本地**源码模式**跑客户端 | 双击 `dev.bat`（只能开一个，`strictPort`） |
-| 跑**已打包**客户端（可多开） | 双击 `run.bat` |
-| 一键打包 | 双击 `build-exe.bat` |
+| 运行 Tauri 开发版 | 双击 `dev.bat` 或执行 `npm run dev:desktop` |
+| 运行最新的已发布 Tauri 便携版 | 双击 `run.bat` |
 
 ---
 

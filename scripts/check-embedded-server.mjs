@@ -135,7 +135,7 @@ const problems = [];
 async function main() {
   if (!existsSync(exe)) {
     console.error(`找不到产物：${exe}`);
-    console.error('先执行 npm run build:exe（或用 --exe 指定路径）。');
+    console.error('先执行 npm run build:electron:exe（或用 --exe 指定路径）。');
     process.exit(2);
   }
 

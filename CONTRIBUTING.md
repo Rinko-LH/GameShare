@@ -25,8 +25,7 @@
 
 ## 环境问题
 
-Windows 10 / 11、Node ≥ 20。开发机特定的环境坑（npm 被拦截、electron-builder
-缓存与文件锁等）见 `docs/BUILD-NOTES.md`——不是每个人都会遇到，遇到了别慌。
+Tauri 客户端的开发环境和集成测试见 [Tauri 客户端说明](apps/tauri/README.md)。本机构建环境和旧版 Electron 的打包排障见 [构建备忘](docs/BUILD-NOTES.md)。
 
 ## 方向讨论
 

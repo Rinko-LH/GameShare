@@ -176,15 +176,15 @@ section('提示文案：主机与客人分岔');
 
   check('客人文案说「让他重发邀请」', guest.includes('重发') || guest.includes('新的邀请'), guest.slice(0, 120));
   check('客人文案明说「你自己这边不用改」', guest.includes('你自己这边不用改'), guest.slice(0, 160));
-  check('客人文案**不**让他去开隧道', !guest.includes('打开左侧「异地访问」'), guest.slice(0, 160));
+  check('客人文案**不**让他去开隧道', !guest.includes('重新准备邀请网址'), guest.slice(0, 160));
 
-  check('主机文案说「重新开隧道」', host.includes('异地访问'), host.slice(0, 160));
-  check('主机文案说「把新地址的邀请重新发给对方」', host.includes('重新发'), host.slice(0, 200));
+  check('主机文案引导重新准备邀请网址', host.includes('重新准备邀请网址'), host.slice(0, 160));
+  check('主机文案说「把新地址的邀请发给对方」', host.includes('新地址的邀请发给对方'), host.slice(0, 200));
   check('主机文案**不**说「请他重发」（他是主机，没人可求）', !host.includes('请他'), host.slice(0, 200));
 
   check('两种身份文案不同（这是本节的核心）', guest !== host);
   check('unreachable 客人文案也不指向新邀请', !R.describeReachability('unreachable', URL_, { isOwnTunnel: false }).includes('重发'));
-  check('unreachable 主机文案指向隧道开关', R.describeReachability('unreachable', URL_, { isOwnTunnel: true }).includes('异地访问'));
+  check('unreachable 主机文案指向邀请网址', R.describeReachability('unreachable', URL_, { isOwnTunnel: true }).includes('邀请网址'));
 
   const alive = R.describeReachability('alive', URL_, { isOwnTunnel: false });
   check('alive 的文案明说「不是地址失效」（避免误以为要重发邀请）', alive.includes('不是地址失效'), alive.slice(0, 140));

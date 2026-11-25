@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * 打包 Windows 安装包（根 package.json 的 `npm run build:exe` 指向这里）。
+ * 打包旧版 Electron Windows 安装包。
  *
  * 构建主进程、渲染进程并生成安装包；支持把其他目标传给 electron-builder。
  * winCodeSign / NSIS 缓存默认放在工作区 .cache/electron-builder，避免依赖
  * 某台开发机的盘符。已有缓存可通过 ELECTRON_BUILDER_CACHE 指定。
  *
  * 用法：
- *   npm run build:exe
+ *   npm run build:electron:exe
  *   node scripts/build-exe.mjs -c.directories.output=release-backup   # 产物目录被锁时绕开
  */
 import { spawn } from 'node:child_process';
