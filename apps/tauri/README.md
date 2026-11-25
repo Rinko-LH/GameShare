@@ -31,6 +31,6 @@ node tests/check-client.mjs src-tauri/target/x86_64-pc-windows-msvc/release/game
 ## 当前范围
 
 - 通过 Cloudflare 临时入口、IP 或自备入口创建房间，并可加入现有服务上的房间。使用浏览器共享面板选择屏幕或窗口，接收并独立显示队友画面。
-- 麦克风和 Windows 全局按住发言沿用现有界面。窗口声音取决于 WebView2 是否为所选窗口返回音轨。按进程隔离采音、整机混音采集和外部游戏窗口无边框化仍走 Electron。
+- 麦克风和 Windows 全局按住发言沿用现有界面。选「全部电脑」后，可在 WebView2 共享面板中选择「整个屏幕」并开启系统音频。窗口声音和系统声音均取决于 WebView2 是否返回音轨。按进程隔离采音和外部游戏窗口无边框化仍走 Electron。
 - 签发 TURN 凭据、浮窗透明度、浮窗位置持久化和浮窗全局切换键尚未迁移。来自既有信令服务器的邀请及 TURN 配置继续由原 WebRTC 会话处理。
 - Electron 和 Tauri 使用独立的应用数据目录，首次打开 Tauri 时需重新设置客户端偏好。

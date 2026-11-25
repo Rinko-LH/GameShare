@@ -2035,7 +2035,7 @@ export default function App() {
                     <p className="audio-failure__title">{t('audioFail.title')}</p>
                     <p className="hint hint--dim">{audioFailure.message}</p>
                     <div className="row">
-                      {!isTauri && <button
+                      {(!isTauri || audioMode === 'application') && <button
                         type="button"
                         className="btn"
                         disabled={busy}
@@ -2090,7 +2090,7 @@ export default function App() {
                     （画面会闪一下）。屏幕源没有所属进程，选它会自动落回「全部电脑」。 */}
                 <div className="row row--modes" role="radiogroup" aria-label={t('share.modeAria')}>
                   <span className="hint hint--dim">{t('share.modeLabel')}</span>
-                  {UI_AUDIO_MODES.filter(({ mode }) => !isTauri || mode !== 'system').map(({ mode, label, title }) => (
+                  {UI_AUDIO_MODES.map(({ mode, label, title }) => (
                     <button
                       key={mode}
                       type="button"
@@ -2099,7 +2099,7 @@ export default function App() {
                       }
                       onClick={() => changeAudioMode(mode)}
                       disabled={busy}
-                      title={t(title)}
+                      title={t(isTauri && mode === 'system' ? 'audio.system.tauri.title' : title)}
                     >
                       {t(label)}
                     </button>
@@ -2136,7 +2136,7 @@ export default function App() {
               <>
                 <div className="row row--modes" role="radiogroup" aria-label={t('share.modeAria')}>
                   <span className="hint hint--dim">{t('share.modeLabel')}</span>
-                  {UI_AUDIO_MODES.filter(({ mode }) => !isTauri || mode !== 'system').map(({ mode, label, title }) => (
+                  {UI_AUDIO_MODES.map(({ mode, label, title }) => (
                     <button
                       key={mode}
                       type="button"
@@ -2144,13 +2144,13 @@ export default function App() {
                         audioModeChoice === mode ? 'btn btn--mode btn--mode-on' : 'btn btn--mode'
                       }
                       onClick={() => setAudioModeChoice(mode)}
-                      title={t(title)}
+                      title={t(isTauri && mode === 'system' ? 'audio.system.tauri.title' : title)}
                     >
                       {t(label)}
                     </button>
                   ))}
                 </div>
-                <p className="hint hint--dim">{isTauri ? '窗口声音由 WebView2 共享面板提供。如果面板没有声音选项，仍可共享画面。' : t('share.modeDefaultHint')}</p>
+                <p className="hint hint--dim">{t(isTauri ? 'share.modeTauriHint' : 'share.modeDefaultHint')}</p>
 
                 {/* 未共享时也可预设帧率：只记偏好，startShare 时应用 */}
                 <div className="row row--modes" role="radiogroup" aria-label={t('share.fpsAria')}>

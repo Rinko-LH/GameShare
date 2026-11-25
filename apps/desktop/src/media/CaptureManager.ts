@@ -286,19 +286,24 @@ export class CaptureManager {
   }
 
   async #startWebViewDisplay(options: StartDisplayOptions): Promise<MediaStream> {
-    const requestAudio = options.audioMode === 'application' ||
-      (options.audioMode === undefined && options.withAudio === true);
-    const mode: AudioCaptureMode = requestAudio ? 'application' : 'none';
+    const mode = options.audioMode ?? (options.withAudio === true ? 'application' : 'none');
+    const systemAudio = mode === 'system';
+    const windowAudio = mode === 'application';
+    const requestAudio = systemAudio || windowAudio;
+    const audioConstraints: MediaTrackConstraints & { restrictOwnAudio?: boolean } = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+    if (systemAudio) audioConstraints.restrictOwnAudio = true;
     let stream: MediaStream;
     try {
       // 调用必须发生在用户点击之后、任何异步 IPC 之前。WebView2 自己处理选源和授权。
       const constraints: DisplayMediaStreamOptions & { windowAudio: string; systemAudio: string } = {
-        video: { frameRate: 120 },
-        audio: requestAudio
-          ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-          : false,
-        systemAudio: 'exclude',
-        windowAudio: requestAudio ? 'window' : 'exclude',
+        video: systemAudio ? { frameRate: 120, displaySurface: 'monitor' } : { frameRate: 120 },
+        audio: requestAudio ? audioConstraints : false,
+        systemAudio: systemAudio ? 'include' : 'exclude',
+        windowAudio: windowAudio ? 'window' : 'exclude',
       };
       stream = await navigator.mediaDevices.getDisplayMedia(constraints);
     } catch (error) {
@@ -309,17 +314,25 @@ export class CaptureManager {
       for (const track of stream.getTracks()) track.stop();
       throw new CaptureError('选中的共享源未返回视频');
     }
-    // 浏览器选项是提示。仅保留窗口共享返回的声音，避免整机音频回灌。
-    if (!requestAudio || track.getSettings().displaySurface !== 'window') {
+    // WebView2 仍允许用户另选共享源。只保留所选音频模式对应的音轨。
+    const surface = track.getSettings().displaySurface;
+    if (!(systemAudio && surface === 'monitor') && !(windowAudio && surface === 'window')) {
       for (const audio of stream.getAudioTracks()) {
         stream.removeTrack(audio);
         audio.stop();
       }
     }
     this.stop();
-    this.#lastAudioMode = mode;
+    this.#lastAudioMode = requestAudio ? mode : 'none';
     this.#audioError = requestAudio && stream.getAudioTracks().length === 0
-      ? '当前共享源未提供窗口声音。画面已共享。' : null;
+      ? systemAudio
+        ? surface === 'monitor'
+          ? '画面已共享，未收到系统声音。重新共享时，可在面板中开启「共享系统音频」（若可选）。'
+          : '画面已共享。「全部电脑」声音模式需要选择「整个屏幕」。'
+        : surface === 'monitor'
+          ? '画面已共享。如需连同系统声音一起共享，请选择「全部电脑」声音模式。'
+          : '当前共享源未提供窗口声音。画面已共享。'
+      : null;
     this.#audioFailure = this.#audioError
       ? { message: this.#audioError, failedMode: mode, suggestion: null } : null;
     this.#adopt(stream, track.label || '屏幕共享');
