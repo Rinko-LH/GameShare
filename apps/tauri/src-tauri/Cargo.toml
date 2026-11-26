@@ -1,6 +1,6 @@
 [package]
 name = "gameshare-tauri"
-version = "1.6.2"
+version = "1.7.0"
 description = "GameShare desktop client for WebView2"
 edition = "2021"
 
