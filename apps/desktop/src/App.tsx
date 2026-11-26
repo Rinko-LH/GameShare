@@ -293,9 +293,6 @@ export default function App() {
    * 这个选择在共享中也可以改，改了就按换源流程重采（画面会闪一下，语义最干净）。
    */
   const [audioModeChoice, setAudioModeChoice] = useState<AudioCaptureMode>('application');
-  const [soundChoice, setSoundChoice] = useState('window');
-  const autoWindowAudio = soundChoice === 'window' || soundChoice === 'both';
-  const offerSystemAudio = soundChoice === 'screen' || soundChoice === 'both';
 
   /** 被放大到主画面的那一路；null 表示网格布局 */
   const [focusedPeerId, setFocusedPeerId] = useState<string | null>(null);
@@ -709,7 +706,7 @@ export default function App() {
       setSourceError(null);
       try {
         if (isTauri) {
-          await session.startShare({ sourceId, autoWindowAudio, offerSystemAudio });
+          await session.startShare({ sourceId });
         } else {
           const src = sources.find((s) => s.id === sourceId);
           const mode = src?.kind === 'screen' && audioModeChoice === 'application' ? 'system' : audioModeChoice;
@@ -730,7 +727,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [session, sources, audioModeChoice, autoWindowAudio, offerSystemAudio, isTauri],
+    [session, sources, audioModeChoice, isTauri],
   );
 
   /** 共享中改音频模式 = 按换源流程用同一个源重采（画面会闪一下，但语义最干净） */
@@ -1503,19 +1500,6 @@ export default function App() {
           <div id="sidebar-page-share" className="sidebar-page" role="tabpanel" aria-labelledby="sidebar-tab-share" hidden={sidePage !== 'share'}>
           {inRoom && <section className="panel panel--tight share-source">
             <h2>{t('share.title')}</h2>
-            {isTauri && <div className="share-setting">
-              {sharing && <span className="hint">{t('share.nextSource')}</span>}
-              <label>
-                <span className="share-setting__label">{t('share.modeAria')}</span>
-                <select className="field__input field__input--compact" disabled={busy}
-                  value={soundChoice} onChange={event => setSoundChoice(event.target.value)}>
-                  <option value="window">{t('share.autoWindowAudio')}</option>
-                  <option value="none">{t('audio.none')}</option>
-                  <option value="screen">{t('share.offerSystemAudio')}</option>
-                  <option value="both">{t('share.bothAudio')}</option>
-                </select>
-              </label>
-            </div>}
 
             {sharing ? (
               <>
@@ -1588,9 +1572,9 @@ export default function App() {
                 </div>
 
                 {(pickerOpen || isTauri) && sourceError && <p className="hint hint--warn">{sourceError}</p>}
-                {isTauri && <ApplicationAudioPicker active={audioApplication} disabled={busy}
+                {isTauri && <ApplicationAudioPicker active={audioApplication} muted={!appAudioEnabled} disabled={busy}
                   onSelect={app => session.selectApplicationAudio(app.pid)}
-                  onStop={() => session.stopApplicationAudio()} />}
+                  onToggleMute={() => session.setAppAudioEnabled(!appAudioEnabled)} />}
                 {pickerOpen && sourceList}
                 {pickerOpen && sources.length === 0 && !sourceError && (
                   <p className="hint hint--dim">{t('share.noSources')}</p>

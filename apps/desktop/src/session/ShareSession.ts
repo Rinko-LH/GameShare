@@ -13,6 +13,7 @@ import { DEFAULT_SIGNALING_URL, normalizeSignalingAddress, buildIceServers, merg
 
 import { CaptureError, CaptureManager } from '../media/CaptureManager';
 import { MicCapture, type MicSettings } from '../media/MicCapture';
+import type { AudioApplication } from '../media/process-audio';
 import { MeshManager } from '../rtc/MeshManager';
 import type { LinkDiagnosis } from '../rtc/PeerLink';
 import type { LinkState, RemoteTracks } from '../rtc/types';
@@ -125,7 +126,7 @@ export interface SessionState {
   hasAudio: boolean;
   /** 应用声音这一条轨当前是否在往外发（关掉后画面照常推） */
   appAudioEnabled: boolean;
-  audioApplication: string | null;
+  audioApplication: AudioApplication | null;
   /** 这次共享用的音频模式（application / system / none…）；UI 显示「共享声音状态」用 */
   audioMode: AudioCaptureMode | null;
   /**
@@ -148,8 +149,6 @@ export interface SessionState {
 }
 
 export interface StartShareOptions {
-  autoWindowAudio?: boolean;
-  offerSystemAudio?: boolean;
   /** 真实采集源 id；与 testPattern 二选一 */
   sourceId?: string;
   /** 用合成动画源代替真实采集，自动化验收用 */
@@ -907,10 +906,11 @@ export class ShareSession {
   async selectApplicationAudio(source: number | string): Promise<void> {
     const { application, track } = await this.capture.selectApplicationAudio(source, () => this.stopApplicationAudio());
     if (this.capture.audioTrack !== track) return;
-    this.#mesh?.setLocalTrack('appAudio', track);
+    const enabled = !this.#state.audioApplication || this.#state.appAudioEnabled;
+    this.#mesh?.setLocalTrack('appAudio', enabled ? track : null);
     this.#patch({
-      appAudioEnabled: true, hasAudio: true, audioMode: 'application',
-      audioApplication: application.title || `PID ${application.pid}`, audioFailure: null,
+      appAudioEnabled: enabled, hasAudio: true, audioMode: 'application',
+      audioApplication: { ...application, title: application.title || `PID ${application.pid}` }, audioFailure: null,
     });
   }
 
@@ -980,7 +980,6 @@ export class ShareSession {
         });
       } else if (options.sourceId) {
         stream = await this.capture.startDisplay(options.sourceId, {
-          offerSystemAudio: options.offerSystemAudio,
           withAudio: options.withAudio,
           audioMode: options.audioMode,
         });
@@ -1008,9 +1007,9 @@ export class ShareSession {
     if (!wasSharing) {
       this.signaling.setSharing(true, qualityForResolution(this.#state.videoResolution));
     }
-    const autoCaptureAudio = window.gameShare?.runtime === 'tauri' && options.autoWindowAudio &&
+    const autoCaptureAudio = window.gameShare?.runtime === 'tauri' &&
       track?.getSettings().displaySurface === 'window' && !appAudio;
-    const failure = autoCaptureAudio ? null : this.capture.audioFailure;
+    const failure = this.capture.audioFailure;
     this.#patch({
       sharing: true,
       captureLabel: this.capture.sourceLabel,
@@ -1025,8 +1024,6 @@ export class ShareSession {
         track?.getSettings().height ?? '?'
       }，源高 ${this.capture.sourceHeight ?? '?'}，${appAudio ? '含应用声音' : '无声音'}）`,
     );
-    // 音频失败必须显式摆给用户（UI 读 state.audioFailure 弹三选项），
-    // 不能只写一行日志就当没发生 —— 那等于静默修改了用户的选择。
     if (failure) {
       this.pushLog(`应用声音未采到，已降级为无声画面：${failure.message}`);
     }

@@ -58,7 +58,6 @@ export interface TestPatternOptions {
 }
 
 export interface StartDisplayOptions {
-  offerSystemAudio?: boolean;
   /**
    * 是否要声音。**这是老界面的布尔开关**，渲染层内部会翻译成 audioMode：
    * `true → 'system'`、`false → 'none'`。
@@ -250,7 +249,7 @@ export class CaptureManager {
   /* ---------------- 真实捕获 ---------------- */
 
   async startDisplay(sourceId: string, options: StartDisplayOptions = {}): Promise<MediaStream> {
-    if (window.gameShare?.runtime === 'tauri') return this.#startWebViewDisplay(options.offerSystemAudio ?? false);
+    if (window.gameShare?.runtime === 'tauri') return this.#startWebViewDisplay();
     const api = window.gameShare?.capture;
     if (!api) throw new CaptureError('当前不在 Electron 环境，无法采集屏幕');
 
@@ -327,23 +326,15 @@ export class CaptureManager {
     return stream;
   }
 
-  async #startWebViewDisplay(offerSystemAudio: boolean): Promise<MediaStream> {
-    const audioConstraints: MediaTrackConstraints & { restrictOwnAudio?: boolean } = {
-      echoCancellation: false,
-      noiseSuppression: false,
-      autoGainControl: false,
-      restrictOwnAudio: true,
-    };
+  async #startWebViewDisplay(): Promise<MediaStream> {
     let stream: MediaStream;
     try {
       // 调用必须发生在用户点击之后、任何异步 IPC 之前。WebView2 自己处理选源和授权。
-      const constraints: DisplayMediaStreamOptions & { windowAudio: 'exclude' } = {
-        video: offerSystemAudio ? { frameRate: 120, displaySurface: 'monitor' } : { frameRate: 120 },
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: 120 },
         // 普通选源只向 WebView2 请求画面，窗口声音由 GameShare 单独采集。
-        audio: offerSystemAudio ? audioConstraints : false,
-        windowAudio: 'exclude',
-      };
-      stream = await navigator.mediaDevices.getDisplayMedia(constraints);
+        audio: false,
+      });
     } catch (error) {
       throw new CaptureError(`获取画面失败：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -352,23 +343,15 @@ export class CaptureManager {
       for (const track of stream.getTracks()) track.stop();
       throw new CaptureError('选中的共享源未返回视频');
     }
-    const surface = track.getSettings().displaySurface;
-    let removedAudio = false;
     for (const audio of stream.getAudioTracks()) {
-      if (offerSystemAudio && surface === 'monitor') continue;
       stream.removeTrack(audio);
       audio.stop();
-      removedAudio = surface !== 'window';
     }
 
     this.stop();
-    this.#lastAudioMode = stream.getAudioTracks().length ? (surface === 'monitor' ? 'system' : 'application') : null;
-    this.#audioError = removedAudio
-      ? '未能确认音轨来自所选应用，已拦截该音轨，继续共享画面。'
-      : null;
-    this.#audioFailure = this.#audioError
-      ? { message: this.#audioError, failedMode: 'application', suggestion: null }
-      : null;
+    this.#lastAudioMode = null;
+    this.#audioError = null;
+    this.#audioFailure = null;
     this.#adopt(stream, track.label || '屏幕共享');
     return stream;
   }

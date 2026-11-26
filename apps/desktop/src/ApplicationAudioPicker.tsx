@@ -1,73 +1,117 @@
-import { useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { t } from './i18n';
 import { listAudioApplications, type AudioApplication } from './media/process-audio';
 
-export function ApplicationAudioPicker({ active, disabled, onSelect, onStop }: {
-  active: string | null;
+export function ApplicationAudioPicker({ active, muted, disabled, onSelect, onToggleMute }: {
+  active: AudioApplication | null;
+  muted: boolean;
   disabled: boolean;
   onSelect: (app: AudioApplication) => Promise<void>;
-  onStop: () => void;
+  onToggleMute: () => void;
 }) {
-  const [applications, setApplications] = useState<AudioApplication[] | null>(null);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState('');
+  const listId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [applications, setApplications] = useState<AudioApplication[]>([]);
+  const [pending, setPending] = useState<'loading' | 'switching' | null>(null);
+  const [error, setError] = useState<'listError' | 'switchError' | null>(null);
 
   const refresh = async () => {
-    setPending(true);
-    setError('');
+    if (disabled || pending) return;
+    setPending('loading');
+    setError(null);
     try {
       setApplications(await listAudioApplications());
-    } catch (error) {
-      setError(String(error));
+    } catch {
+      setError('listError');
     } finally {
-      setPending(false);
+      setPending(null);
     }
+  };
+
+  const close = () => {
+    setOpen(false);
+    trigger.current?.focus();
   };
 
   const select = async (app: AudioApplication) => {
-    setPending(true);
-    setError('');
+    if (disabled || pending || active?.pid === app.pid) return;
+    setPending('switching');
+    setError(null);
     try {
       await onSelect(app);
-      setApplications(null);
-    } catch (error) {
-      setError(String(error));
+      close();
+    } catch {
+      setError('switchError');
     } finally {
-      setPending(false);
+      setPending(null);
     }
   };
 
-  return <div className="application-audio">
-    {active && <p className="hint" role="status">{t('share.audioApplication.label')} · {active}</p>}
-    {applications === null ? <div className="row">
-      <button className="btn btn--tiny" type="button" disabled={disabled || pending} onClick={() => void refresh()}>
+  return <div className="application-audio" onKeyDown={event => {
+    if (event.key !== 'Escape' || !open || pending === 'switching') return;
+    event.stopPropagation();
+    close();
+  }}>
+    {active && <p className="hint" role="status">{t('share.audioApplication.label')} · {active.title}</p>}
+    <div className="row">
+      <button ref={trigger} className="btn btn--tiny" type="button" disabled={disabled}
+        aria-expanded={open} aria-controls={open ? listId : undefined} aria-disabled={pending === 'switching'}
+        onClick={() => {
+          if (pending === 'switching') return;
+          if (open) {
+            close();
+          } else {
+            setApplications([]);
+            setOpen(true);
+            void refresh();
+          }
+        }}>
         {t(active ? 'share.audioApplication.change' : 'share.audioApplication.choose')}
       </button>
-      {active && <button className="btn btn--tiny btn--shrink" type="button" disabled={disabled || pending} onClick={onStop}>
-        {t('share.audioApplication.stop')}
+      {active && <button className="btn btn--tiny btn--shrink application-audio__mute" type="button"
+        aria-label={t('share.audioApplication.mute')} aria-pressed={muted}
+        title={t(muted ? 'share.audioApplication.unmute' : 'share.audioApplication.mute')}
+        disabled={disabled} onClick={onToggleMute}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+          strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+          <path d="M2 6h3l4-3v10l-4-3H2z" />
+          {muted ? <path d="m2 2 12 12" /> : <path d="M11 6a2.8 2.8 0 0 1 0 4m2-6a5.7 5.7 0 0 1 0 8" />}
+        </svg>
       </button>}
-    </div> : <div className="application-audio">
-      <label>
-        <span className="share-setting__label">{t('share.audioApplication.label')}</span>
-        <select className="field__input field__input--compact" value="" onChange={event => {
-          const app = applications.find(item => String(item.pid) === event.target.value);
-          if (app) void select(app);
-        }}
-          disabled={disabled || pending || applications.length === 0}>
-          <option value="">{t(applications.length ? 'share.audioApplication.placeholder' : 'share.audioApplication.empty')}</option>
-          {applications.map(app => <option key={app.pid} value={app.pid}>{app.title}</option>)}
-        </select>
-      </label>
+    </div>
+    {open && <div id={listId} className="application-audio">
+      {pending && <p className="hint hint--dim" role="status">
+        {t(pending === 'loading' ? 'share.audioApplication.loading' : 'share.audioApplication.switching')}
+      </p>}
+      {applications.length > 0 && <ul className="application-audio__list" aria-label={t('share.audioApplication.label')}>
+        {applications.map(app => {
+          const current = app.pid === active?.pid;
+          return <li key={app.pid}>
+            <button type="button" className="btn btn--tiny application-audio__option"
+              aria-current={current ? 'true' : undefined} aria-disabled={current || !!pending}
+              disabled={disabled || current} onClick={() => void select(app)}>
+              {app.title}
+              {current && <span className="tag">{t('share.audioApplication.current')}</span>}
+            </button>
+          </li>;
+        })}
+      </ul>}
+      {error && <p className="hint hint--warn" role="alert">
+        {t(error === 'listError' ? 'share.audioApplication.listError' : 'share.audioApplication.switchError')}
+      </p>}
+      {!pending && !error && applications.length === 0 && <p className="hint hint--dim" role="status">
+        {t('share.audioApplication.empty')}
+      </p>}
       <div className="row">
-        <button className="btn btn--tiny btn--shrink" type="button" disabled={disabled || pending} onClick={() => void refresh()}>
+        <button className="btn btn--tiny btn--shrink" type="button" disabled={disabled}
+          aria-disabled={!!pending} onClick={() => void refresh()}>
           {t('share.audioApplication.refresh')}
         </button>
-        <button className="btn btn--tiny btn--shrink" type="button" disabled={pending} onClick={() => {
-          setApplications(null);
-          setError('');
-        }}>{t('mic.cancelKey')}</button>
+        <button className="btn btn--tiny btn--shrink" type="button" disabled={pending === 'switching'} onClick={close}>
+          {t('mic.cancelKey')}
+        </button>
       </div>
     </div>}
-    {error && <p className="hint hint--warn" role="alert">{error}</p>}
   </div>;
 }

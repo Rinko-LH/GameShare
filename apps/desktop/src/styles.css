@@ -745,6 +745,34 @@ body {
 .share-actions > .btn:not(.btn--primary, .btn--danger) { color: var(--text-dim); }
 .application-audio, .application-audio label { display: grid; gap: 6px; min-width: 0; }
 .application-audio .hint { overflow-wrap: anywhere; }
+.application-audio__mute { display: grid; place-items: center; }
+.application-audio__list {
+  display: grid;
+  max-height: 12rem;
+  overflow: auto;
+  margin: 0;
+  padding: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg);
+  list-style: none;
+}
+.application-audio__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.application-audio__option:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.application-audio__option[aria-current="true"] { opacity: 1; }
+.application-audio [aria-disabled="true"]:not(:disabled) { opacity: 0.5; cursor: wait; }
 
 .share-setting { display: grid; gap: 5px; }
 .share-setting__label { color: var(--text-dim); font-size: 12px; }
