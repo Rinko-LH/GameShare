@@ -229,8 +229,8 @@ try {
   assert.equal(await evaluate('window.__voiceTestTrack.enabled'), false);
   await sleep(100);
   await evaluate('window.__testVoiceKey(true)'); assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true);
-  await evaluate('document.querySelector(".app__resizer__grip").click()');
-  await until(() => evaluate('!document.querySelector("[data-voice-panel]")'), 'Sidebar did not collapse');
+  await evaluate('document.querySelector(".sidebar-toggle").click()');
+  await until(() => evaluate('document.querySelector("#workspace-controls").hidden'), 'Sidebar did not collapse');
   assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true, 'Collapsing sidebar disabled global voice');
   await evaluate('window.gameShare.windowControl.minimize()'); await sleep(150);
   assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true, 'Minimize disabled global voice');
@@ -248,7 +248,7 @@ try {
   assert.equal(await evaluate('window.__voiceTestTrack.enabled'), true, 'Floating mode disabled global voice');
   await evaluate('window.gameShare.windowMode.setEnabled(false);window.__testVoiceKey(false)');
   await until(() => evaluate('!window.__voiceTestTrack.enabled'), 'Global release did not mute');
-  if (await evaluate('!document.querySelector("[data-voice-panel]")')) await evaluate('document.querySelector(".app__resizer__grip").click()');
+  if (await evaluate('document.querySelector("#workspace-controls").hidden')) await evaluate('document.querySelector(".sidebar-toggle").click()');
   async function holdVoice() {
     const point = await evaluate(`(() => { const b = document.querySelector('[data-voice-hold]'); b.scrollIntoView({block:'center'}); const r=b.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()`);
     await command('Input.dispatchMouseEvent', {type:'mousePressed',button:'left',buttons:1,clickCount:1,...point});
@@ -272,9 +272,9 @@ try {
   await until(() => evaluate('window.__voiceTestTrack.readyState === "ended"'), 'Mic off did not release device');
   await evaluate('window.__voiceTestContext.close()');
   console.log('PASS: actual voice UI hold/release, blur/tab cancellation, mode changes and true microphone release');
-  assert.equal(await evaluate('document.querySelectorAll(".quality-slider__points > span").length'), 3);
+  assert.equal(await evaluate('document.querySelectorAll("[data-video-quality-preset]").length'), 3);
   assert.equal(await qualitySelected('auto'), true);
-  await fill('[data-video-quality]', '2');
+  await evaluate('document.querySelector("[data-video-quality-preset=hd]").click()');
   assert.equal(await qualitySelected('hd'), true);
   await evaluate('Array.from(document.querySelectorAll("#sidebar-page-share button")).find(b => b.title.includes("测试") || b.title.includes("test")).click()');
   await until(() => evaluate('Boolean(document.querySelector("#sidebar-page-share .tag--live"))'), 'Test sharing did not start');

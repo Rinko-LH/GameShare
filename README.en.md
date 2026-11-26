@@ -87,7 +87,7 @@ Create a room with Cloudflare tunneling selected for signaling. When the tempora
 
 ### Sharing a window with sound
 
-In the room, open the screen-sharing panel and choose a window or screen. To share system audio, select **Whole PC**, then select the entire screen in the WebView2 picker and enable system audio. Per-process audio capture and the borderless-window action are available in the legacy Electron client.
+In the room, open the screen-sharing panel and choose a window or screen. By default, selecting a window shares audio from its application process and child processes. If automatic capture fails, video continues and you can use **Choose audio application** to pick the audio source manually. To share system audio with a screen, check **Allow sharing computer audio with the entire screen**, then enable audio in the picker. The borderless-window action is available in the legacy Electron client.
 
 Each remote tile has a volume button — voice and game audio adjust separately.
 

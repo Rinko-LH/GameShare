@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod process_audio;
 mod signaling;
 mod tunnel;
 mod voice;
@@ -160,6 +161,7 @@ fn app_info(window: WebviewWindow) -> Result<Value, String> {
 
 fn main() {
     tauri::Builder::default()
+        .manage(process_audio::ProcessAudio::default())
         .manage(signaling::Signaling::default())
         .manage(tunnel::Tunnel::default())
         .manage(voice::VoiceHotkey::default())
@@ -185,11 +187,16 @@ fn main() {
             signaling::signaling_status,
             tunnel::tunnel_status,
             tunnel::set_tunnel,
-            voice::configure_voice_hotkey
+            voice::configure_voice_hotkey,
+            process_audio::list_audio_applications,
+            process_audio::start_application_audio,
+            process_audio::read_application_audio,
+            process_audio::stop_application_audio
         ])
         .on_page_load(|view, payload| {
             if view.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
                 view.state::<voice::VoiceHotkey>().reset();
+                view.state::<process_audio::ProcessAudio>().reset();
             }
         })
         .on_window_event(|window, event| match event {

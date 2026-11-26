@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { DEFAULT_SIGNALING_URL, normalizeSignalingAddress } from '@game-share/shared';
 import { parseInvitation } from './invitations';
 import { MEDIA_STRATEGIES, SIGNALING_METHODS, type ConnectionConfig } from './connection-config';
 import { ShareSession } from './session/ShareSession';
 import type { EmbeddedServerStatus, TunnelStatus } from './types/global';
 import { RoomAddressField } from './RoomAddressField';
-import { t } from './i18n';
+import { fmt, t } from './i18n';
 
 interface Props {
   config: ConnectionConfig;
@@ -42,14 +42,17 @@ export function ConnectionPanel(props: Props) {
   const [invitation, setInvitation] = useState(props.initialInvitation);
   useEffect(() => { setInvitation(props.initialInvitation); }, [props.initialInvitation]);
   const [error, setError] = useState<string | null>(null);
+  const formId = useId();
   const parsed = parseInvitation(invitation);
   const locked = props.disabled || props.busy;
-  const inherited = props.role === 'guest' && Boolean(parsed?.server && parsed.room && !parsed.error && (parsed.config || parsed.mode || parsed.mediaPolicy));
+  const joining = props.role === 'guest';
+  const inherited = joining && Boolean(parsed?.server && parsed.room && !parsed.error && (parsed.config || parsed.mode || parsed.mediaPolicy));
   const { signaling, mediaPolicy } = props.config;
   const selectedIp = mediaPolicy === 'selected-ip-experimental';
   const cloud = signaling === 'cloudflare';
   const addresses = [...new Set([...(props.server?.lanUrls ?? []), ...(props.server?.publicV4Urls ?? []), ...(props.server?.publicV6Urls ?? [])])];
-  const shownError = parsed?.error ?? error ?? props.connectionError;
+  const invitationError = joining ? parsed?.error : null;
+  const shownError = invitationError ?? error ?? props.connectionError;
   const bareIpJoin = signaling === 'ip' && mediaPolicy === 'local-auto';
 
   async function connect() {
@@ -101,54 +104,86 @@ export function ConnectionPanel(props: Props) {
 
   const refresh = () => void window.gameShare?.server.getStatus().then(props.onServer).catch(err => setError(ShareSession.describeError(err)));
   return <section className="panel panel--tight connection-panel">
-    <fieldset className="connection-roles" aria-label="房间操作" disabled={locked}>
-      <label><input type="radio" name="connection-role" value="host" checked={props.role === 'host'} onChange={() => { props.onRoleChange('host'); setError(null); }} />创建房间</label>
-      <label><input type="radio" name="connection-role" value="guest" checked={props.role === 'guest'} onChange={() => { props.onRoleChange('guest'); setError(null); }} />加入房间</label>
-    </fieldset>
-    <form className="connection-config-form" onSubmit={event => { event.preventDefault(); void connect(); }}>
+    <form className="connection-config-form" aria-label={t('conn.roomSetup')} aria-busy={props.busy} onSubmit={event => { event.preventDefault(); void connect(); }}>
+      <fieldset className="connection-roles" aria-label={t('conn.roomAction')} disabled={locked}>
+        <label>
+          <input type="radio" name="connection-role" value="host" checked={!joining} onChange={() => { props.onRoleChange('host'); setError(null); }} />
+          {t('room.create')}
+        </label>
+        <label>
+          <input type="radio" name="connection-role" value="guest" checked={joining} onChange={() => { props.onRoleChange('guest'); setError(null); }} />
+          {t('conn.join')}
+        </label>
+      </fieldset>
       <label className="ip-connect__field"><span>{t('conn.nickname')}</span>
         <input name="nickname" className="field__input field__input--compact" value={props.nickname} onChange={event => props.onNickname(event.target.value)} maxLength={16} disabled={locked} />
       </label>
-      {props.role === 'guest' && <>
-        <label className="ip-connect__field"><span>房间邀请</span>
-          <textarea data-invitation className="field__input" value={invitation} disabled={locked} onChange={event => {
-            setInvitation(event.target.value); setError(null); props.onInvitation(event.target.value);
-          }} placeholder="粘贴完整邀请" rows={2} spellCheck={false} />
+      {joining && <>
+        <label className="ip-connect__field"><span>{t('conn.invitation')}</span>
+          <textarea
+            data-invitation className="field__input" value={invitation} disabled={locked}
+            aria-invalid={Boolean(invitationError)} aria-describedby={invitationError ? `${formId}-error` : `${formId}-invitation-status`}
+            onChange={event => {
+              setInvitation(event.target.value);
+              setError(null);
+              props.onInvitation(event.target.value);
+            }}
+            placeholder={t('conn.invitationPlaceholder')} rows={2} spellCheck={false}
+          />
         </label>
-        {parsed?.server && parsed.room && !parsed.error && <p className="hint" role="status">
-          已识别房间 {parsed.room}{!inherited && '。请核对房主的连接配置。'}
-        </p>}
+        <div id={`${formId}-invitation-status`} className="connection-invite-status" role="status">
+          {parsed?.server && parsed.room && !parsed.error && <p className="hint">
+            {fmt(inherited ? 'conn.inviteSettingsApplied' : 'conn.inviteCheckSettings', { room: parsed.room })}
+          </p>}
+        </div>
+        <details className="connection-manual">
+          <summary>{t('conn.manual')}</summary>
+          <div className="connection-manual__fields">
+            {invitation.trim() && <p className="hint">{t('conn.manualHint')}</p>}
+            <label className="ip-connect__field"><span>{t('conn.hostAddress')}</span>
+              <input data-join-address className="field__input" value={address} onChange={event => setAddress(event.target.value)} disabled={locked} placeholder={t('conn.hostAddressPlaceholder')} spellCheck={false} />
+            </label>
+            <label className="ip-connect__field"><span>{t(bareIpJoin ? 'conn.roomCodeOptional' : 'conn.roomCode')}</span>
+              <input data-join-code className="field__input" value={roomCode} onChange={event => setRoomCode(event.target.value)} disabled={locked} maxLength={8} spellCheck={false} />
+            </label>
+          </div>
+        </details>
       </>}
-      <label className="ip-connect__field"><span>信令连接</span>
-        <select data-signaling className="field__input field__input--compact" value={signaling} disabled={locked || inherited} onChange={event => props.onConfig({ ...props.config, signaling: event.target.value as ConnectionConfig['signaling'] })}>
-          {SIGNALING_METHODS.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
-        </select>
-      </label>
-      {props.role === 'host' && !cloud && <>
-        <RoomAddressField source={signaling === 'external' ? 'external' : 'local'} addresses={addresses} value={props.inviteAddress} onChange={props.onInviteAddress} disabled={locked} />
-        {signaling === 'ip' && <button className="btn btn--tiny" type="button" disabled={locked} onClick={refresh}>刷新本机地址</button>}
-      </>}
-      <label className="ip-connect__field"><span>音视频连接</span>
-        <select data-media-policy className="field__input field__input--compact" value={mediaPolicy} disabled={locked || inherited} onChange={event => props.onConfig({ ...props.config, mediaPolicy: event.target.value as ConnectionConfig['mediaPolicy'] })}>
-          {MEDIA_STRATEGIES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
-        </select>
-      </label>
-      {selectedIp && <>
-        <label className="ip-connect__field" title="UU 组网时选择自己的 UU IP"><span>本机媒体 IP</span>
-          <select data-media-ip className="field__input field__input--compact media-ip-select" value={props.mediaIp} disabled={locked} onChange={event => props.onMediaIp(event.target.value)}>
-            <option value="">请选择自己的媒体 IP</option>
-            {(props.server?.mediaAddresses ?? []).map(item => <option key={`${item.interfaceName}/${item.address}`} value={item.address}>{item.interfaceName} · {item.address}（{item.family}）</option>)}
-          </select>
-        </label>
-        <button className="btn btn--tiny" type="button" disabled={locked} onClick={refresh}>刷新媒体 IP</button>
-      </>}
-      {props.role === 'guest' && <details><summary>手动填写地址和房间码</summary>
-        {invitation.trim() && <p className="hint">清空邀请后可手动加入。</p>}
-        <label className="ip-connect__field"><span>房主地址</span><input data-join-address className="field__input" value={address} onChange={event => setAddress(event.target.value)} disabled={locked} placeholder="https://房主域名 或 IP:端口" /></label>
-        <label className="ip-connect__field"><span>{bareIpJoin ? '房间码（唯一 IP 房间时可不填）' : '房间码'}</span><input data-join-code className="field__input" value={roomCode} onChange={event => setRoomCode(event.target.value)} disabled={locked} maxLength={8} spellCheck={false} /></label>
-      </details>}
-      <button className="btn btn--primary" type="submit" disabled={locked || (selectedIp && !props.mediaIp) || (props.role === 'guest' && (Boolean(parsed?.error) || (!invitation.trim() && !address.trim())))}>{props.busy ? '正在连接…' : props.role === 'host' ? '创建房间' : '连接并加入'}</button>
+      <fieldset className="connection-network">
+        <legend>{t('conn.network')}</legend>
+        <div className="connection-option">
+          <label className="ip-connect__field"><span>{t('conn.signaling')}</span>
+            <select data-signaling className="field__input field__input--compact" value={signaling} disabled={locked || inherited} onChange={event => props.onConfig({ ...props.config, signaling: event.target.value as ConnectionConfig['signaling'] })}>
+              {SIGNALING_METHODS.map(({ value }) => <option key={value} value={value}>{t(`conn.signaling.${value}`)}</option>)}
+            </select>
+          </label>
+          {!joining && !cloud && <>
+            <RoomAddressField source={signaling === 'external' ? 'external' : 'local'} addresses={addresses} value={props.inviteAddress} onChange={props.onInviteAddress} disabled={locked} />
+            {signaling === 'ip' && <button className="btn btn--tiny" type="button" disabled={locked} onClick={refresh}>{t('ip.refresh')}</button>}
+          </>}
+        </div>
+        <div className="connection-option">
+          <label className="ip-connect__field"><span>{t('conn.media')}</span>
+            <select data-media-policy className="field__input field__input--compact" value={mediaPolicy} disabled={locked || inherited} onChange={event => props.onConfig({ ...props.config, mediaPolicy: event.target.value as ConnectionConfig['mediaPolicy'] })}>
+              {MEDIA_STRATEGIES.map(({ value }) => <option key={value} value={value}>{t(`conn.media.${value}`)}</option>)}
+            </select>
+          </label>
+          {selectedIp && <>
+            <label className="ip-connect__field"><span>{t('conn.mediaIp')}</span>
+              <select data-media-ip className="field__input field__input--compact media-ip-select" value={props.mediaIp} disabled={locked} aria-describedby={`${formId}-media-hint`} onChange={event => props.onMediaIp(event.target.value)}>
+                <option value="">{t('conn.chooseMediaIp')}</option>
+                {(props.server?.mediaAddresses ?? []).map(item => <option key={`${item.interfaceName}/${item.address}`} value={item.address}>{item.interfaceName} · {item.address} ({item.family})</option>)}
+              </select>
+            </label>
+            <p id={`${formId}-media-hint`} className="hint">{t('conn.mediaIpHint')}</p>
+            <button className="btn btn--tiny" type="button" disabled={locked} onClick={refresh}>{t('conn.refreshMediaIp')}</button>
+          </>}
+        </div>
+      </fieldset>
+      {shownError && <p id={`${formId}-error`} className="hint hint--warn connection-error" role="alert">{shownError}</p>}
+      <button className="btn btn--primary connection-submit" type="submit" disabled={locked || (selectedIp && !props.mediaIp) || (joining && (Boolean(invitationError) || (!invitation.trim() && !address.trim())))}>
+        {t(props.busy ? 'ip.connecting' : joining ? 'ip.connect' : 'room.create')}
+      </button>
     </form>
-    {shownError && <p className="hint hint--warn" role="alert">{shownError}</p>}
   </section>;
 }

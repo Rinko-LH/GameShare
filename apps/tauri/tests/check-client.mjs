@@ -123,7 +123,7 @@ try {
   const host = await launch('host');
   const hostEval = host.evaluate;
   assert.equal(await hostEval('document.querySelector("#sidebar-page-room").textContent.includes("高级设置")'), false);
-  assert.deepEqual(await hostEval('[...document.querySelectorAll(".quality-slider__labels > span")].map(node => node.textContent)'), ['流畅', '标清', '高清']);
+  assert.deepEqual(await hostEval('[...document.querySelectorAll("[data-video-quality-preset]")].map(node => node.textContent.trim())'), ['流畅', '标清', '高清']);
   assert.equal(await hostEval('document.querySelector("[data-video-quality-auto]").getAttribute("aria-pressed")'), 'true');
   assert.equal(await hostEval('document.querySelector("[data-video-quality]").dataset.videoQuality'), 'auto');
   const voice = await hostEval('window.gameShare.voiceHotkey.configure({active:true,binding:{code:"F8",ctrl:false,alt:false,shift:false}})');
@@ -241,12 +241,8 @@ try {
           if (this.track?.kind === 'video' && encoding) window.__videoEncoding = encoding;
         };
       })()`);
-      await fill(guest.evaluate, '[data-video-quality]', '0');
-      assert.equal(await guest.evaluate(`(() => {
-        const slider = document.querySelector('[data-video-quality]');
-        return ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].every(key =>
-          !slider.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })));
-      })()`), true);
+      await guest.evaluate('document.querySelector("[data-video-quality-preset=smooth]").click()');
+      assert.equal(await guest.evaluate('document.querySelector("[data-video-quality-preset=smooth]").getAttribute("aria-pressed")'), 'true');
     }
     if (useRealCapture) console.log(`在 WebView2 选源窗口中选择测试窗口 ${captureTitle}`);
     await clickText(guest.evaluate, useRealCapture ? '选择窗口或屏幕' : '测试源');
@@ -259,18 +255,18 @@ try {
     }
     if (i === 1 && !useRealCapture) {
       const smooth = await until(() => guest.evaluate('window.__videoEncoding?.scaleResolutionDownBy === 2 && window.__videoEncoding'), 'apply Smooth video encoding');
-      await fill(guest.evaluate, '[data-video-quality]', '1');
+      await guest.evaluate('document.querySelector("[data-video-quality-preset=standard]").click()');
       const standard = await until(() => guest.evaluate('window.__videoEncoding?.maxBitrate === 1500000 && window.__videoEncoding'), 'apply SD video encoding');
       assert.ok(standard.scaleResolutionDownBy > 1 && standard.scaleResolutionDownBy < smooth.scaleResolutionDownBy);
       await guest.evaluate('document.querySelector("[data-video-quality-auto]").click()');
       const automatic = await until(() => guest.evaluate('window.__videoEncoding?.maxBitrate === 2000000 && window.__videoEncoding'), 'apply Auto video encoding');
       assert.equal(automatic.scaleResolutionDownBy, 1);
-      await fill(guest.evaluate, '[data-video-quality]', '2');
+      await guest.evaluate('document.querySelector("[data-video-quality-preset=hd]").click()');
       const hd = await until(() => guest.evaluate('window.__videoEncoding?.maxBitrate === 4000000 && window.__videoEncoding'), 'apply HD video encoding');
       assert.equal(hd.scaleResolutionDownBy, 1);
       assert.equal(hd.maxFramerate, smooth.maxFramerate);
       assert.equal(await guest.evaluate('localStorage.getItem("gs.videoQuality")'), 'hd');
-      console.log('PASS: quality slider updates live scaling and bitrate while keeping frame rate');
+      console.log('PASS: quality controls update live scaling and bitrate while keeping frame rate');
     }
     if (useRealCapture) {
       const surfaces = await guest.evaluate(`[...document.querySelectorAll('video')].flatMap(video =>
@@ -281,7 +277,7 @@ try {
   }
   console.log('PASS: Rust server, room creation, GS3 invitation and three remote senders');
   if (electronExe) console.log('PASS: Electron 1.6.2 joined the Tauri room and sent video');
-  await hostEval('document.querySelector(".switch--boxed input").click()');
+  await hostEval('document.querySelector("[data-float-toggle]").click()');
   const windows = await until(async () => {
     const tiles = (await host.list()).filter((entry) => entry.url.includes('floatTile='));
     return tiles.length === 3 && tiles;

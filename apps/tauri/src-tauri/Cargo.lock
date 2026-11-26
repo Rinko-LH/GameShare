@@ -1126,6 +1126,7 @@ name = "gameshare-tauri"
 version = "1.6.2"
 dependencies = [
  "axum",
+ "cc",
  "getrandom 0.4.3",
  "if-addrs",
  "reqwest",

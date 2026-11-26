@@ -125,6 +125,7 @@ export interface SessionState {
   hasAudio: boolean;
   /** 应用声音这一条轨当前是否在往外发（关掉后画面照常推） */
   appAudioEnabled: boolean;
+  audioApplication: string | null;
   /** 这次共享用的音频模式（application / system / none…）；UI 显示「共享声音状态」用 */
   audioMode: AudioCaptureMode | null;
   /**
@@ -147,6 +148,8 @@ export interface SessionState {
 }
 
 export interface StartShareOptions {
+  autoWindowAudio?: boolean;
+  offerSystemAudio?: boolean;
   /** 真实采集源 id；与 testPattern 二选一 */
   sourceId?: string;
   /** 用合成动画源代替真实采集，自动化验收用 */
@@ -197,6 +200,7 @@ const INITIAL_STATE: SessionState = {
   videoResolution: DEFAULT_VIDEO_RESOLUTION,
   hasAudio: false,
   appAudioEnabled: false,
+  audioApplication: null,
   audioMode: null,
   audioFailure: null,
   micEnabled: false,
@@ -900,6 +904,22 @@ export class ShareSession {
    * 想彻底停止采集，只能停掉整个共享。这一点必须让用户知道 ——
    * 所以界面上说的是「关闭应用声音」，不是「停止采集声音」。
    */
+  async selectApplicationAudio(source: number | string): Promise<void> {
+    const { application, track } = await this.capture.selectApplicationAudio(source, () => this.stopApplicationAudio());
+    if (this.capture.audioTrack !== track) return;
+    this.#mesh?.setLocalTrack('appAudio', track);
+    this.#patch({
+      appAudioEnabled: true, hasAudio: true, audioMode: 'application',
+      audioApplication: application.title || `PID ${application.pid}`, audioFailure: null,
+    });
+  }
+
+  stopApplicationAudio(): void {
+    if (!this.capture.stopApplicationAudio()) return;
+    this.#mesh?.setLocalTrack('appAudio', null);
+    this.#patch({ appAudioEnabled: false, hasAudio: false, audioMode: null, audioApplication: null });
+  }
+
   setAppAudioEnabled(enabled: boolean): void {
     if (enabled) {
       const track = this.capture.stream?.getAudioTracks()[0] ?? null;
@@ -960,6 +980,7 @@ export class ShareSession {
         });
       } else if (options.sourceId) {
         stream = await this.capture.startDisplay(options.sourceId, {
+          offerSystemAudio: options.offerSystemAudio,
           withAudio: options.withAudio,
           audioMode: options.audioMode,
         });
@@ -987,12 +1008,15 @@ export class ShareSession {
     if (!wasSharing) {
       this.signaling.setSharing(true, qualityForResolution(this.#state.videoResolution));
     }
-    const failure = this.capture.audioFailure;
+    const autoCaptureAudio = window.gameShare?.runtime === 'tauri' && options.autoWindowAudio &&
+      track?.getSettings().displaySurface === 'window' && !appAudio;
+    const failure = autoCaptureAudio ? null : this.capture.audioFailure;
     this.#patch({
       sharing: true,
       captureLabel: this.capture.sourceLabel,
       hasAudio: appAudio !== null,
       appAudioEnabled: appAudio !== null,
+      audioApplication: null,
       audioMode: this.capture.lastAudioMode,
       audioFailure: failure,
     });
@@ -1005,6 +1029,16 @@ export class ShareSession {
     // 不能只写一行日志就当没发生 —— 那等于静默修改了用户的选择。
     if (failure) {
       this.pushLog(`应用声音未采到，已降级为无声画面：${failure.message}`);
+    }
+    if (autoCaptureAudio) {
+      try {
+        await this.selectApplicationAudio(track.label);
+      } catch (error) {
+        if (this.capture.stream !== stream || track.readyState !== 'live' || this.capture.audioTrack) return;
+        const message = error instanceof Error ? error.message : String(error);
+        this.#patch({ audioFailure: { message, failedMode: 'application', suggestion: null } });
+        this.pushLog(`自动采集窗口音频失败：${message}`);
+      }
     }
   }
 
@@ -1032,6 +1066,7 @@ export class ShareSession {
       captureLabel: null,
       hasAudio: false,
       appAudioEnabled: false,
+      audioApplication: null,
       audioMode: null,
       audioFailure: null,
     });

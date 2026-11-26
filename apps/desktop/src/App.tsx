@@ -1,5 +1,5 @@
 import { VIDEO_QUALITY_PRESETS, readVideoQuality, saveVideoQuality, type VideoQualityPreset } from './video-resolution';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import type { PeerInfo } from '@game-share/protocol';
 import { DEFAULT_SIGNALING_URL, normalizeSignalingAddress, remoteAudioAudience } from '@game-share/shared';
@@ -18,6 +18,7 @@ import type { LinkDiagnosis } from './rtc/PeerLink';
 import { startFloatTilePump } from './media/float-tile-pump';
 import { ShareSession } from './session/ShareSession';
 import { ConnectionPanel } from './ConnectionPanel';
+import { ApplicationAudioPicker } from './ApplicationAudioPicker';
 import { VoicePanel, useVoiceHotkey } from './VoicePanel';
 import { readVoicePreferences } from './voice-settings';
 import { readConnectionConfig, saveConnectionConfig, type ConnectionConfig } from './connection-config';
@@ -193,15 +194,38 @@ export default function App() {
   const logDialog = useRef<HTMLDialogElement>(null);
   const [logCopyStatus, setLogCopyStatus] = useState<'copying' | 'copied' | 'failed'>();
   const [sidePage, setSidePage] = useState<'room' | 'share'>('room');
+  const bodyRef = useRef<HTMLElement>(null);
+  const sidebarContentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    bodyRef.current?.scrollTo(0, 0);
+    sidebarContentRef.current?.scrollTo(0, 0);
+  }, [sidePage]);
 
   /**
    * 左侧栏宽度与收起状态（localStorage 记忆：gs.sidebarWidth / gs.sidebarCollapsed）。
    *
-   * 默认 300px；可拖拽（app__body 中间那条 resizer）范围 252~480。收起后侧栏
-   * 完全让位给画面区，展开走 resizer 上那颗把手按钮。
+   * 默认 320px，可在侧栏与画面之间拖动调整（252–480px）。顶栏按钮切换显示。
    */
-  const [sideWidth, setSideWidth] = useState(300);
+  const [sideWidth, setSideWidth] = useState(320);
   const [sideCollapsed, setSideCollapsed] = useState(false);
+  const pendingSidebarFocus = useRef(false);
+  const openSidebarPage = (page: 'room' | 'share') => {
+    if (!sideCollapsed && sidePage === page) {
+      document.getElementById(`sidebar-tab-${page}`)?.focus();
+      return;
+    }
+    pendingSidebarFocus.current = true;
+    if (sideCollapsed) {
+      setSideCollapsed(false);
+      window.localStorage.setItem('gs.sidebarCollapsed', '0');
+    }
+    setSidePage(page);
+  };
+  useEffect(() => {
+    if (!pendingSidebarFocus.current || sideCollapsed) return;
+    pendingSidebarFocus.current = false;
+    document.getElementById(`sidebar-tab-${sidePage}`)?.focus();
+  }, [sideCollapsed, sidePage]);
   useEffect(() => {
     const w = Number(window.localStorage.getItem('gs.sidebarWidth'));
     if (Number.isFinite(w) && w >= 252 && w <= 480) setSideWidth(w);
@@ -223,25 +247,26 @@ export default function App() {
   const [sideDragging, setSideDragging] = useState(false);
   const onResizerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      if (e.button !== 0 || sideCollapsed) return;
-      // 把手上按下交给它的 click（收起/展开），只有条上按下才是拖拽
-      if ((e.target as HTMLElement).closest('.app__resizer__grip')) return;
+      if (e.button !== 0 || !e.isPrimary) return;
       e.currentTarget.setPointerCapture(e.pointerId);
-      sideDragRef.current = { startX: e.clientX, startW: sideWidth };
+      sideDragRef.current = {
+        startX: e.clientX,
+        startW: document.getElementById('workspace-controls')?.clientWidth ?? sideWidth,
+      };
       setSideDragging(true);
     },
-    [sideCollapsed, sideWidth],
+    [sideWidth],
   );
   const onResizerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const d = sideDragRef.current;
-    if (!d) return;
+    if (!d || !e.currentTarget.hasPointerCapture(e.pointerId)) return;
     applySideWidth(d.startW + (e.clientX - d.startX));
   }, [applySideWidth]);
   const onResizerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!sideDragRef.current) return;
     sideDragRef.current = null;
     setSideDragging(false);
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }, []);
 
   /**
@@ -268,6 +293,9 @@ export default function App() {
    * 这个选择在共享中也可以改，改了就按换源流程重采（画面会闪一下，语义最干净）。
    */
   const [audioModeChoice, setAudioModeChoice] = useState<AudioCaptureMode>('application');
+  const [soundChoice, setSoundChoice] = useState('window');
+  const autoWindowAudio = soundChoice === 'window' || soundChoice === 'both';
+  const offerSystemAudio = soundChoice === 'screen' || soundChoice === 'both';
 
   /** 被放大到主画面的那一路；null 表示网格布局 */
   const [focusedPeerId, setFocusedPeerId] = useState<string | null>(null);
@@ -284,6 +312,7 @@ export default function App() {
     shareFps,
     hasAudio,
     appAudioEnabled,
+    audioApplication,
     audioMode,
     audioFailure,
     micEnabled,
@@ -679,16 +708,15 @@ export default function App() {
       setBusy(true);
       setSourceError(null);
       try {
-        // 屏幕源没有所属进程，「仅此应用」对它不可用 —— 显式落回「全部电脑」，
-        // 并把选择器同步过去（界面上能看到当前生效项，不是静默改选择）。
-        const src = sources.find((s) => s.id === sourceId);
-        const mode =
-          src?.kind === 'screen' && audioModeChoice === 'application'
-            ? 'system'
-            : audioModeChoice;
-        if (mode !== audioModeChoice) setAudioModeChoice(mode);
-        await session.startShare({ sourceId, audioMode: mode });
-        setActiveSourceId(sourceId);
+        if (isTauri) {
+          await session.startShare({ sourceId, autoWindowAudio, offerSystemAudio });
+        } else {
+          const src = sources.find((s) => s.id === sourceId);
+          const mode = src?.kind === 'screen' && audioModeChoice === 'application' ? 'system' : audioModeChoice;
+          if (mode !== audioModeChoice) setAudioModeChoice(mode);
+          await session.startShare({ sourceId, audioMode: mode });
+        }
+        if (session.getState().sharing) setActiveSourceId(sourceId);
         setPickerOpen(false);
       } catch (err) {
         // 保持面板打开，让用户能立刻改选另一个源。
@@ -702,7 +730,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [session, sources, audioModeChoice],
+    [session, sources, audioModeChoice, autoWindowAudio, offerSystemAudio, isTauri],
   );
 
   /** 共享中改音频模式 = 按换源流程用同一个源重采（画面会闪一下，但语义最干净） */
@@ -833,47 +861,20 @@ export default function App() {
 
   /* ---------------- 渲染 ---------------- */
 
-  const automaticQuality = videoQuality.id === 'auto';
-  const qualityIndex = automaticQuality ? 1 : MANUAL_VIDEO_QUALITIES.indexOf(videoQuality);
-  const qualityControl = <div className="quality-control">
-    <div className="quality-control__header">
-      <span className="hint hint--dim">{t('share.quality')}</span>
-      <button
-        type="button" className={`btn btn--tiny ${automaticQuality ? 'btn--primary' : 'btn--ghost'}`}
-        aria-pressed={automaticQuality} data-video-quality-auto
-        onClick={() => changeVideoQuality(AUTO_VIDEO_QUALITY)}
-      >
+  const qualityControl = <div className="share-setting quality-control" role="group" aria-label={t('share.quality')} data-video-quality={videoQuality.id}>
+    <span className="share-setting__label">{t('share.quality')}</span>
+    <div className="settings-options quality-control__options">
+      <button type="button" className="btn settings-option--divider-after" data-video-quality-auto
+        aria-pressed={videoQuality.id === 'auto'} onClick={() => changeVideoQuality(AUTO_VIDEO_QUALITY)}>
         {t('share.quality.auto')}
       </button>
+      {MANUAL_VIDEO_QUALITIES.map(preset => (
+        <button type="button" className="btn" key={preset.id} data-video-quality-preset={preset.id}
+          aria-pressed={videoQuality.id === preset.id} onClick={() => changeVideoQuality(preset)}>
+          {t(`share.quality.${preset.id}`)}
+        </button>
+      ))}
     </div>
-    <span className="quality-slider">
-      <span className="quality-slider__track" aria-hidden="true">
-        {!automaticQuality && <span style={{ width: `${qualityIndex / (MANUAL_VIDEO_QUALITIES.length - 1) * 100}%` }} />}
-      </span>
-      <span className="quality-slider__points" aria-hidden="true">
-        {MANUAL_VIDEO_QUALITIES.map((preset, index) => (
-          <span key={preset.id} className={!automaticQuality && index <= qualityIndex ? 'quality-slider__point--filled' : undefined} />
-        ))}
-      </span>
-      <input
-        type="range" min={0} max={MANUAL_VIDEO_QUALITIES.length - 1} step={1} value={qualityIndex}
-        aria-label={t('share.quality.manual')} aria-valuetext={t(`share.quality.${videoQuality.id}`)}
-        data-video-quality={videoQuality.id}
-        onKeyDown={event => {
-          if (event.key.startsWith('Arrow')) event.preventDefault();
-        }}
-        onChange={event => changeVideoQuality(MANUAL_VIDEO_QUALITIES[event.currentTarget.valueAsNumber])}
-        onPointerUp={event => {
-          // Clicking the middle node in Auto leaves the native range value unchanged.
-          if (automaticQuality && event.button === 0) {
-            changeVideoQuality(MANUAL_VIDEO_QUALITIES[event.currentTarget.valueAsNumber]);
-          }
-        }}
-      />
-    </span>
-    <span className="quality-slider__labels" aria-hidden="true">
-      {MANUAL_VIDEO_QUALITIES.map(preset => <span key={preset.id} className={preset === videoQuality ? 'quality-slider__label--active' : undefined}>{t(`share.quality.${preset.id}`)}</span>)}
-    </span>
   </div>;
 
   // 共享状态下这套列表要能反复用（initial 选源 / 共享中换源）。
@@ -1148,11 +1149,12 @@ export default function App() {
     if (!update) return;
     const tracks = new Map<string, MediaStreamTrack>();
     for (const [peerId, stream] of Object.entries(remoteStreams)) {
+      if (!remoteSharing[peerId]) continue;
       const track = stream.getVideoTracks()[0];
       if (track) tracks.set(peerId, track);
     }
     update(tracks);
-  }, [remoteStreams]);
+  }, [remoteStreams, remoteSharing]);
 
   // 浮窗只消费远端视频轨道，主窗口的播放元素不参与取帧。
   useEffect(() => {
@@ -1254,47 +1256,73 @@ export default function App() {
         selfPeerId={room?.self.peerId}
       />
       <header className="app__header">
-        <div className="app__title"
-          onPointerDown={isTauri ? (event) => {
-            if (event.button === 0) window.gameShare?.windowControl.startDragging?.();
-          } : undefined}
-          onDoubleClick={isTauri ? () => window.gameShare?.windowControl.toggleMaximize() : undefined}>
-          <span className="app__logo">◧</span>
-          <div>
-            <h1>GameShare</h1>
-            {appVersion && <p className="app__subtitle">V{appVersion}</p>}
-          </div>
+        <div className="app__header-left">
+          <button
+            className="sidebar-toggle"
+            type="button"
+            aria-expanded={!sideCollapsed}
+            aria-controls="workspace-controls"
+            onClick={toggleSideCollapsed}
+          >
+            <span className="sidebar-toggle__icon" aria-hidden="true" />
+            {t(sideCollapsed ? 'sidebar.expand' : 'sidebar.collapse')}
+          </button>
         </div>
 
         <div className="app__header-right">
-          {sideCollapsed && <button className="btn btn--tiny" type="button" onClick={() => { toggleSideCollapsed(); setSidePage('room'); }}>{t('sidebar.room')}</button>}
-          <button
-            className="btn btn--tiny"
-            type="button"
-            aria-haspopup="dialog"
-            onClick={() => {
-              if (logCopyStatus !== 'copying') setLogCopyStatus(undefined);
-              logDialog.current?.showModal();
-            }}
-          >
-            {t('log.title')}
-          </button>
-          {/* 中英切换：只切界面文案，房间/共享等功能不受影响 */}
-          <button
-            type="button"
-            className="btn btn--tiny"
-            onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')}
-            title="切换界面语言 / Switch UI language"
-          >
-            {t('lang.toggle')}
-          </button>
-          {/* 浮窗模式：全屏游戏时用。快捷键在主进程里全局注册，这里只管显示状态。
-              多开客户端时快捷键只有一个窗口抢得到，抢不到就如实标出来 ——
-              否则用户按了没反应，只会以为是软件坏了。
-              主窗口一直保留完整控制界面，只有独立小窗置顶。 */}
-          {floatWindow && (
-            <label
-              className="switch switch--boxed"
+          <div className="app__title"
+            onPointerDown={isTauri ? (event) => {
+              if (event.button === 0) window.gameShare?.windowControl.startDragging?.();
+            } : undefined}
+            onDoubleClick={isTauri ? () => window.gameShare?.windowControl.toggleMaximize() : undefined}>
+            <h1>GameShare</h1>
+            {appVersion && <p className="app__subtitle">V{appVersion}</p>}
+          </div>
+
+          <div className="header-actions header-actions--utility">
+            <button
+              className="header-action"
+              type="button"
+              aria-haspopup="dialog"
+              onClick={() => {
+                if (logCopyStatus !== 'copying') setLogCopyStatus(undefined);
+                logDialog.current?.showModal();
+              }}
+            >
+              <svg className="header-action__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <rect x="3.5" y="2" width="9" height="12" rx="1.5" />
+                <path d="M6 6h4M6 8.5h4M6 11h2.5" />
+              </svg>
+              {t('log.title')}
+            </button>
+            {/* 中英切换：只切界面文案，房间/共享等功能不受影响 */}
+            <button
+              type="button"
+              className="header-action"
+              onClick={() => setLang(getLang() === 'zh' ? 'en' : 'zh')}
+              title={t('lang.toggleTitle')}
+            >
+              <svg className="header-action__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <circle cx="8" cy="8" r="5.75" />
+                <ellipse cx="8" cy="8" rx="2.5" ry="5.75" />
+                <path d="M2.25 8h11.5" />
+              </svg>
+              {t('lang.toggle')}
+            </button>
+          </div>
+
+          {floatWindow && <div className="header-actions header-actions--views">
+            {/* 浮窗模式：全屏游戏时用。快捷键在主进程里全局注册，这里只管显示状态。
+                多开客户端时快捷键只有一个窗口抢得到，抢不到就如实标出来 ——
+                否则用户按了没反应，只会以为是软件坏了。
+                主窗口一直保留完整控制界面，只有独立小窗置顶。 */}
+            <button
+              type="button"
+              className="header-action"
+              data-float-toggle
+              aria-pressed={floatWindow.enabled}
+              disabled={floatBusy}
+              onClick={() => void handleToggleFloat(!floatWindow.enabled)}
               title={
                 floatWindow.hotkeyAvailable
                   ? fmt('float.hotkeyTitle', {
@@ -1303,28 +1331,18 @@ export default function App() {
                   : isTauri ? undefined : t('float.hotkeyTakenTitle')
               }
             >
-              <input
-                type="checkbox"
-                checked={floatWindow.enabled}
-                disabled={floatBusy}
-                onChange={(e) => void handleToggleFloat(e.target.checked)}
-              />
               <span>{t('float.mode')}</span>
               {floatWindow.hotkeyAvailable ? (
                 <span className="tag">{floatWindow.hotkey.replace('Control+Alt+', 'Ctrl+Alt+')}</span>
               ) : (
                 !isTauri && <span className="tag tag--warn">{t('float.hotkeyConflict')}</span>
               )}
-            </label>
-          )}
-
-          {floatWindow && <>
-            <button type="button" className={`btn btn--tiny${stageFullscreen ? ' btn--primary' : ''}`} aria-pressed={stageFullscreen} title={t('view.mainViewHint')} disabled={floatBusy} onClick={() => void handleMainView()}>{t('view.fullscreen')}</button>
-
-          </>}
+            </button>
+            <button type="button" className="header-action" aria-pressed={stageFullscreen} title={t('view.mainViewHint')} disabled={floatBusy} onClick={() => void handleMainView()}>{t('view.fullscreen')}</button>
+          </div>}
 
           <div className={`status status--${headerStatus.tone}`} title={headerStatus.detail || (connectionRole === 'host' ? t('status.host.title') : t('status.guest.title'))}>
-            <span className="status__dot" />
+            <span className="status__dot" aria-hidden="true" />
             <span>{connectionRole === 'host' ? headerStatus.label : `${t('status.guest.prefix')} · ${headerStatus.label}`}</span>
             {connectionRole === 'guest' && connected && connection.rttMs !== null && <span className="status__rtt">{connection.rttMs} ms</span>}
           </div>
@@ -1393,17 +1411,14 @@ export default function App() {
       </dialog>
 
       <main
-        className="app__body"
-        style={
-          // 常规模式：三列（侧栏宽可拖拽调、收起时切两列）。
-          { gridTemplateColumns: sideCollapsed ? '34px 1fr' : `${sideWidth}px 34px 1fr` }
-        }
+        className={`app__body${sideCollapsed ? ' app__body--side-collapsed' : ''}`}
+        ref={bodyRef}
+        style={{ '--sidebar-width': `${sideWidth}px` } as React.CSSProperties}
       >
-        {!sideCollapsed && (
-        <div className="app__side">
+        <aside className="app__side" id="workspace-controls" aria-label={t('sidebar.controls')} hidden={sideCollapsed}>
           <div className="sidebar-header">
             <div className="sidebar-tabs" role="tablist" aria-label={t('sidebar.controls')}>
-              {(['room', 'share'] as const).map((page) => <button key={page} id={`sidebar-tab-${page}`} type="button" role="tab" tabIndex={sidePage === page ? 0 : -1} aria-selected={sidePage === page} aria-controls={`sidebar-page-${page}`} className={`btn${sidePage === page ? ' btn--primary' : ' btn--ghost'}`} onClick={() => setSidePage(page)} onKeyDown={(event) => {
+              {(['room', 'share'] as const).map((page) => <button key={page} id={`sidebar-tab-${page}`} type="button" role="tab" tabIndex={sidePage === page ? 0 : -1} aria-selected={sidePage === page} aria-controls={`sidebar-page-${page}`} className="btn btn--ghost" onClick={() => setSidePage(page)} onKeyDown={(event) => {
                 if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
                 event.preventDefault();
                 const next = event.key === 'Home' ? 'room' : event.key === 'End' ? 'share' : page === 'room' ? 'share' : 'room';
@@ -1425,9 +1440,8 @@ export default function App() {
                 {t('room.retryInvite')}
               </button>}
             </div>}
-            {sidePage === 'share' && !inRoom && <p className="hint hint--warn">{t('share.needRoom')}</p>}
           </div>
-          <div className="sidebar-content">
+          <div className="sidebar-content" ref={sidebarContentRef}>
           {isFloat && floatWindow && !isTauri && <section className="panel panel--tight">
             <h2>{t('float.mode')}</h2>
             <label className="view-opacity"><span>{t('view.opacity')}</span>
@@ -1487,9 +1501,21 @@ export default function App() {
 
           </div>
           <div id="sidebar-page-share" className="sidebar-page" role="tabpanel" aria-labelledby="sidebar-tab-share" hidden={sidePage !== 'share'}>
-          {/* ---- 共享 ---- */}
-          <section className="panel panel--tight">
+          {inRoom && <section className="panel panel--tight share-source">
             <h2>{t('share.title')}</h2>
+            {isTauri && <div className="share-setting">
+              {sharing && <span className="hint">{t('share.nextSource')}</span>}
+              <label>
+                <span className="share-setting__label">{t('share.modeAria')}</span>
+                <select className="field__input field__input--compact" disabled={busy}
+                  value={soundChoice} onChange={event => setSoundChoice(event.target.value)}>
+                  <option value="window">{t('share.autoWindowAudio')}</option>
+                  <option value="none">{t('audio.none')}</option>
+                  <option value="screen">{t('share.offerSystemAudio')}</option>
+                  <option value="both">{t('share.bothAudio')}</option>
+                </select>
+              </label>
+            </div>}
 
             {sharing ? (
               <>
@@ -1498,28 +1524,27 @@ export default function App() {
                   {captureLabel ?? t('share.unknownSource')}
                   <span className={appAudioEnabled ? 'tag tag--live' : 'tag'}>
                     {appAudioEnabled
-                      ? t(AUDIO_MODE_LABEL[audioMode ?? 'none'] ?? 'audio.withSound')
-                      : audioMode === 'none'
-                        ? t('audio.tag.none')
-                        : t('share.audioOff')}
+                      ? t(isTauri && !audioMode ? 'audio.withSound' : AUDIO_MODE_LABEL[audioMode ?? 'none'] ?? 'audio.withSound')
+                      : t(isTauri || audioMode === 'none' ? 'audio.tag.none' : 'share.audioOff')}
                   </span>
                 </p>
 
                 {/* 音频采集失败 → 三选项显式处理，绝不静默降级也不自动换模式。
                     「继续无声」收起告警；换模式与停止走各自完整流程。 */}
-                {audioFailure && (
+                {isTauri && audioFailure && <p className="hint hint--warn" role="status">{t('share.windowAudioBlocked')}</p>}
+                {!isTauri && audioFailure && (
                   <div className="audio-failure" role="alert">
                     <p className="audio-failure__title">{t('audioFail.title')}</p>
                     <p className="hint hint--dim">{audioFailure.message}</p>
                     <div className="row">
-                      {(!isTauri || audioMode === 'application') && <button
+                      <button
                         type="button"
                         className="btn"
                         disabled={busy}
                         onClick={() => changeAudioMode('system')}
                       >
                         {t('audioFail.toSystem')}
-                      </button>}
+                      </button>
                       <button
                         type="button"
                         className="btn btn--ghost"
@@ -1562,44 +1587,10 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* 共享声音的三种正式状态。共享中切换 = 用同一个源按新模式重采
-                    （画面会闪一下）。屏幕源没有所属进程，选它会自动落回「全部电脑」。 */}
-                <div className="row row--modes" role="radiogroup" aria-label={t('share.modeAria')}>
-                  <span className="hint hint--dim">{t('share.modeLabel')}</span>
-                  {UI_AUDIO_MODES.map(({ mode, label, title }) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={
-                        audioModeChoice === mode ? 'btn btn--mode btn--mode-on' : 'btn btn--mode'
-                      }
-                      onClick={() => changeAudioMode(mode)}
-                      disabled={busy}
-                      title={t(isTauri && mode === 'system' ? 'audio.system.tauri.title' : title)}
-                    >
-                      {t(label)}
-                    </button>
-                  ))}
-                </div>
-
-                {/* 共享帧率：编码 maxFramerate 与采集端共同的上限。发送方本机设置，
-                    不走观看者请求；共享中切换即时生效（setParameters），不重协商。 */}
-                <div className="row row--modes" role="radiogroup" aria-label={t('share.fpsAria')}>
-                  <span className="hint hint--dim">{t('share.fpsLabel')}</span>
-                  {UI_FPS_OPTIONS.map((fps) => (
-                    <button
-                      key={fps}
-                      type="button"
-                      className={shareFps === fps ? 'btn btn--mode btn--mode-on' : 'btn btn--mode'}
-                      onClick={() => changeShareFps(fps)}
-                      title={t('share.fpsTitle')}
-                    >
-                      {fps} {t('share.fpsUnit')}
-                    </button>
-                  ))}
-                </div>
-
                 {(pickerOpen || isTauri) && sourceError && <p className="hint hint--warn">{sourceError}</p>}
+                {isTauri && <ApplicationAudioPicker active={audioApplication} disabled={busy}
+                  onSelect={app => session.selectApplicationAudio(app.pid)}
+                  onStop={() => session.stopApplicationAudio()} />}
                 {pickerOpen && sourceList}
                 {pickerOpen && sources.length === 0 && !sourceError && (
                   <p className="hint hint--dim">{t('share.noSources')}</p>
@@ -1607,46 +1598,12 @@ export default function App() {
               </>
             ) : (
               <>
-                <div className="row row--modes" role="radiogroup" aria-label={t('share.modeAria')}>
-                  <span className="hint hint--dim">{t('share.modeLabel')}</span>
-                  {UI_AUDIO_MODES.map(({ mode, label, title }) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={
-                        audioModeChoice === mode ? 'btn btn--mode btn--mode-on' : 'btn btn--mode'
-                      }
-                      onClick={() => setAudioModeChoice(mode)}
-                      title={t(isTauri && mode === 'system' ? 'audio.system.tauri.title' : title)}
-                    >
-                      {t(label)}
-                    </button>
-                  ))}
-                </div>
-                {isTauri && audioModeChoice === 'system' && <p className="hint hint--dim">{t('share.modeTauriHint')}</p>}
-
-                {/* 未共享时也可预设帧率：只记偏好，startShare 时应用 */}
-                <div className="row row--modes" role="radiogroup" aria-label={t('share.fpsAria')}>
-                  <span className="hint hint--dim">{t('share.fpsLabel')}</span>
-                  {UI_FPS_OPTIONS.map((fps) => (
-                    <button
-                      key={fps}
-                      type="button"
-                      className={shareFps === fps ? 'btn btn--mode btn--mode-on' : 'btn btn--mode'}
-                      onClick={() => changeShareFps(fps)}
-                      title={t('share.fpsTitle')}
-                    >
-                      {fps} {t('share.fpsUnit')}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="row">
+                <div className="row share-actions">
                   <button
                     type="button"
-                    className="btn"
+                    className="btn btn--primary"
                     onClick={() => void (isTauri ? pickSource('webview-display') : refreshSources())}
-                    disabled={!inRoom}
+                    disabled={busy}
                   >
                     {isTauri ? t('share.pickDisplay') : t('share.enumerate')}
                   </button>
@@ -1659,7 +1616,7 @@ export default function App() {
                         await session.startShare({ testPattern: true, label: 'TEST' });
                       })
                     }
-                    disabled={!inRoom}
+                    disabled={busy}
                     title={t('share.testSourceTitle')}
                   >
                     {t('share.testSource')}
@@ -1670,36 +1627,80 @@ export default function App() {
                 {sourceList}
               </>
             )}
-            {qualityControl}
-          </section>
-          <VoicePanel session={session} busy={busy} visible={sidePage === 'share'} run={run} binding={voiceBinding} setBinding={setVoiceBinding} recording={voiceRecording} setRecording={setVoiceRecording} error={voiceHotkeyError} />
+          </section>}
 
+            <div className="sharing-preferences">
+              <section className="panel panel--tight share-settings">
+                <h2>{t('share.settings')}</h2>
+                {!isTauri && <div className="share-setting" role="group" aria-label={t('share.modeAria')}>
+                  <span className="share-setting__label">{t('share.modeAria')}</span>
+                  <div className="settings-options settings-options--three">
+                    {UI_AUDIO_MODES.map(({ mode, label, title }) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={mode === 'system' ? 'btn settings-option--divider-after' : 'btn'}
+                        disabled={sharing && busy}
+                        onClick={() => sharing ? changeAudioMode(mode) : setAudioModeChoice(mode)}
+                        aria-pressed={audioModeChoice === mode}
+                        title={t(title)}
+                      >
+                        {t(label)}
+                      </button>
+                    ))}
+                  </div>
+                </div>}
+
+                {/* 未共享时也可预设帧率：只记偏好，startShare 时应用 */}
+                <div className="share-setting" role="group" aria-label={t('share.fpsAria')}>
+                  <span className="share-setting__label">{t('share.fpsAria')}</span>
+                  <div className="settings-options settings-options--three">
+                    {UI_FPS_OPTIONS.map((fps) => (
+                      <button
+                        key={fps}
+                        type="button"
+                        className="btn"
+                        onClick={() => changeShareFps(fps)}
+                        aria-pressed={shareFps === fps}
+                        title={t('share.fpsTitle')}
+                      >
+                        {fps} {t('share.fpsUnit')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {qualityControl}
+              </section>
+              <VoicePanel session={session} busy={busy} visible={!sideCollapsed && sidePage === 'share'} run={run} binding={voiceBinding} setBinding={setVoiceBinding} recording={voiceRecording} setRecording={setVoiceRecording} error={voiceHotkeyError} />
+            </div>
           </div>
           </div>
-        </div>
-        )}
+        </aside>
 
-        {/* 侧栏拖拽条：左侧细缝拖动调宽，按钮从细缝向右凸出，一键收起/展开侧栏。
-            收起后侧栏整列让位给画面区，把手仍留在这里点得回来。 */}
-        <div
+        {!sideCollapsed && <div
           className={`app__resizer${sideDragging ? ' app__resizer--dragging' : ''}`}
+          role="separator"
+          tabIndex={0}
+          aria-label={t('sidebar.resize')}
+          aria-controls="workspace-controls"
+          aria-orientation="vertical"
+          aria-valuemin={252}
+          aria-valuemax={480}
+          aria-valuenow={sideWidth}
+          title={t('sidebar.resizeTitle')}
           onPointerDown={onResizerDown}
           onPointerMove={onResizerMove}
           onPointerUp={onResizerUp}
           onPointerCancel={onResizerUp}
-          title={sideCollapsed ? t('sidebar.expand') : t('sidebar.resizeTitle')}
-        >
-          <button
-            type="button"
-            className="app__resizer__grip"
-            aria-label={sideCollapsed ? t('sidebar.expand') : t('sidebar.collapse')}
-            aria-expanded={!sideCollapsed}
-            title={sideCollapsed ? t('sidebar.expand') : t('sidebar.collapse')}
-            onClick={toggleSideCollapsed}
-          >
-            {sideCollapsed ? '⟩' : '⟨'}
-          </button>
-        </div>
+          onLostPointerCapture={onResizerUp}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+            event.preventDefault();
+            const width = document.getElementById('workspace-controls')?.clientWidth ?? sideWidth;
+            applySideWidth(width + (event.key === 'ArrowLeft' ? -16 : 16));
+          }}
+        />}
 
         {/* 浮窗里整块画面区就是**拖动区**：窗口是 `setFocusable(false)` 的，标题栏拖动
             与边框缩放都会先激活窗口、在非激活窗口上都不成立，所以只能自绘（见 float-drag.ts）。
@@ -1709,6 +1710,8 @@ export default function App() {
         <div
           className={`app__stage${isFloat ? " stage--tiles" : ""}`}
           ref={stageRef}
+          role="region"
+          aria-label={t('stage.title')}
           onPointerMove={event => {
             if (stageFullscreen && event.clientY - event.currentTarget.getBoundingClientRect().top <= 64) showFullscreenExit();
           }}
@@ -1723,10 +1726,16 @@ export default function App() {
             <p>{fmt('view.floatingCount', { n: tiles?.tiles.length ?? 0 })}</p>
             <p className="hint">{t('view.floatingHint')}</p>
           </div>}
-          {!inRoom ? (
+          {!inRoom || (!isFloat && gridTileCount === 0) ? (
             <div className="stage__empty">
-              <h2>{t('stage.noRoom')}</h2>
-              <p>{t('stage.noRoomHint')}</p>
+              <div className="stage__empty-art" aria-hidden="true" />
+              <h2>{t(inRoom ? 'stage.noShare' : 'stage.title')}</h2>
+              <p>{t(inRoom ? 'stage.noShareHint' : 'stage.noRoomHint')}</p>
+              {(sideCollapsed || (inRoom && sidePage !== 'share')) && (
+                <button type="button" className="btn" onClick={() => openSidebarPage(inRoom ? 'share' : 'room')}>
+                  {t(inRoom ? 'stage.openShare' : 'stage.openRoom')}
+                </button>
+              )}
             </div>
           ) : focusedPeerId ? (
             <div className="stage stage--focused">
@@ -1840,15 +1849,17 @@ function VideoTile({
    * 由 `<video>` 直接播整条流，至少保证「听得见」。
    */
 
+  // A WebRTC receiver can keep its track and last decoded frame after the sender stops.
+  const playbackStream = self || remoteSharing ? stream : null;
   useEffect(() => {
     const video = ref.current;
     if (!video) return;
-    if (video.srcObject !== stream) {
-      video.srcObject = stream;
+    if (video.srcObject !== playbackStream) {
+      video.srcObject = playbackStream;
       setHasFrames(false);
     }
-    if (stream) void video.play().catch(() => undefined);
-  }, [stream]);
+    if (playbackStream) void video.play().catch(() => undefined);
+  }, [playbackStream]);
 
   /**
    * 两条角色音轨的播放**不在这个组件里** —— 见文件末尾的 `RemoteAudioOutlet`。
@@ -1890,6 +1901,7 @@ function VideoTile({
       <video
         ref={ref}
         className="tile__video"
+        hidden={!playbackStream}
         autoPlay
         playsInline
         muted={!noRoleAudio || bothMuted}
@@ -1908,7 +1920,7 @@ function VideoTile({
         不再依附于「格子是否存在」。原因见 `RemoteAudioOutlet` 的注释。
       */}
 
-      {!hasFrames && (
+      {(!playbackStream || !hasFrames) && (
         <div className="tile__placeholder">
           <span>{stream ? t('tile.waiting') : t('tile.noStream')}</span>
         </div>

@@ -11,6 +11,7 @@
  */
 
 import type { AudioCaptureFailure, AudioCaptureMode } from '../types/global';
+import { startApplicationAudio, type ApplicationAudio } from './process-audio';
 
 export interface CaptureSourceInfo {
   id: string;
@@ -57,6 +58,7 @@ export interface TestPatternOptions {
 }
 
 export interface StartDisplayOptions {
+  offerSystemAudio?: boolean;
   /**
    * 是否要声音。**这是老界面的布尔开关**，渲染层内部会翻译成 audioMode：
    * `true → 'system'`、`false → 'none'`。
@@ -107,6 +109,8 @@ export class CaptureManager {
    * 采集层永远不自作主张。
    */
   #audioFailure: AudioCaptureFailure | null = null;
+  #applicationAudio: ApplicationAudio | null = null;
+  #applicationAudioRequest = 0;
 
   get stream(): MediaStream | null {
     return this.#stream;
@@ -119,6 +123,44 @@ export class CaptureManager {
   /** 系统声音轨；采集不到时为 null（非 Windows、不支持的模式、或初始化失败） */
   get audioTrack(): MediaStreamTrack | null {
     return this.#stream?.getAudioTracks()[0] ?? null;
+  }
+
+  async selectApplicationAudio(source: number | string, onEnded: () => void): Promise<ApplicationAudio> {
+    const stream = this.#stream;
+    if (!stream) throw new CaptureError('请先开始共享画面。');
+    const request = ++this.#applicationAudioRequest;
+    const next = await startApplicationAudio(source);
+    if (this.#stream !== stream || this.track?.readyState !== 'live' ||
+        request !== this.#applicationAudioRequest || next.track.readyState !== 'live') {
+      next.stop();
+      throw new CaptureError('应用音频未能接入当前共享，请重试。');
+    }
+    const previous = this.#applicationAudio;
+    this.#applicationAudio = next;
+    for (const audio of stream.getAudioTracks()) {
+      stream.removeTrack(audio);
+      audio.stop();
+    }
+    previous?.stop();
+    stream.addTrack(next.track);
+    this.#lastAudioMode = 'application';
+    this.#audioError = null;
+    this.#audioFailure = null;
+    void next.ended.then(() => {
+      if (this.#applicationAudio === next) onEnded();
+    });
+    return next;
+  }
+
+  stopApplicationAudio(): boolean {
+    this.#applicationAudioRequest++;
+    const audio = this.#applicationAudio;
+    if (!audio) return false;
+    this.#applicationAudio = null;
+    this.#stream?.removeTrack(audio.track);
+    audio.stop();
+    this.#lastAudioMode = null;
+    return true;
   }
 
   get audioError(): string | null {
@@ -208,7 +250,7 @@ export class CaptureManager {
   /* ---------------- 真实捕获 ---------------- */
 
   async startDisplay(sourceId: string, options: StartDisplayOptions = {}): Promise<MediaStream> {
-    if (window.gameShare?.runtime === 'tauri') return this.#startWebViewDisplay(options);
+    if (window.gameShare?.runtime === 'tauri') return this.#startWebViewDisplay(options.offerSystemAudio ?? false);
     const api = window.gameShare?.capture;
     if (!api) throw new CaptureError('当前不在 Electron 环境，无法采集屏幕');
 
@@ -285,25 +327,21 @@ export class CaptureManager {
     return stream;
   }
 
-  async #startWebViewDisplay(options: StartDisplayOptions): Promise<MediaStream> {
-    const mode = options.audioMode ?? (options.withAudio === true ? 'application' : 'none');
-    const systemAudio = mode === 'system';
-    const windowAudio = mode === 'application';
-    const requestAudio = systemAudio || windowAudio;
+  async #startWebViewDisplay(offerSystemAudio: boolean): Promise<MediaStream> {
     const audioConstraints: MediaTrackConstraints & { restrictOwnAudio?: boolean } = {
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false,
+      restrictOwnAudio: true,
     };
-    if (systemAudio) audioConstraints.restrictOwnAudio = true;
     let stream: MediaStream;
     try {
       // 调用必须发生在用户点击之后、任何异步 IPC 之前。WebView2 自己处理选源和授权。
-      const constraints: DisplayMediaStreamOptions & { windowAudio: string; systemAudio: string } = {
-        video: systemAudio ? { frameRate: 120, displaySurface: 'monitor' } : { frameRate: 120 },
-        audio: requestAudio ? audioConstraints : false,
-        systemAudio: systemAudio ? 'include' : 'exclude',
-        windowAudio: windowAudio ? 'window' : 'exclude',
+      const constraints: DisplayMediaStreamOptions & { windowAudio: 'exclude' } = {
+        video: offerSystemAudio ? { frameRate: 120, displaySurface: 'monitor' } : { frameRate: 120 },
+        // 普通选源只向 WebView2 请求画面，窗口声音由 GameShare 单独采集。
+        audio: offerSystemAudio ? audioConstraints : false,
+        windowAudio: 'exclude',
       };
       stream = await navigator.mediaDevices.getDisplayMedia(constraints);
     } catch (error) {
@@ -314,27 +352,23 @@ export class CaptureManager {
       for (const track of stream.getTracks()) track.stop();
       throw new CaptureError('选中的共享源未返回视频');
     }
-    // WebView2 仍允许用户另选共享源。只保留所选音频模式对应的音轨。
     const surface = track.getSettings().displaySurface;
-    if (!(systemAudio && surface === 'monitor') && !(windowAudio && surface === 'window')) {
-      for (const audio of stream.getAudioTracks()) {
-        stream.removeTrack(audio);
-        audio.stop();
-      }
+    let removedAudio = false;
+    for (const audio of stream.getAudioTracks()) {
+      if (offerSystemAudio && surface === 'monitor') continue;
+      stream.removeTrack(audio);
+      audio.stop();
+      removedAudio = surface !== 'window';
     }
+
     this.stop();
-    this.#lastAudioMode = requestAudio ? mode : 'none';
-    this.#audioError = requestAudio && stream.getAudioTracks().length === 0
-      ? systemAudio
-        ? surface === 'monitor'
-          ? '画面已共享，未收到系统声音。重新共享时，可在面板中开启「共享系统音频」（若可选）。'
-          : '画面已共享。「全部电脑」声音模式需要选择「整个屏幕」。'
-        : surface === 'monitor'
-          ? '画面已共享。如需连同系统声音一起共享，请选择「全部电脑」声音模式。'
-          : '当前共享源未提供窗口声音。画面已共享。'
+    this.#lastAudioMode = stream.getAudioTracks().length ? (surface === 'monitor' ? 'system' : 'application') : null;
+    this.#audioError = removedAudio
+      ? '未能确认音轨来自所选应用，已拦截该音轨，继续共享画面。'
       : null;
     this.#audioFailure = this.#audioError
-      ? { message: this.#audioError, failedMode: mode, suggestion: null } : null;
+      ? { message: this.#audioError, failedMode: 'application', suggestion: null }
+      : null;
     this.#adopt(stream, track.label || '屏幕共享');
     return stream;
   }
@@ -529,6 +563,7 @@ export class CaptureManager {
   }
 
   stop(): void {
+    this.stopApplicationAudio();
     if (this.#timer !== null) {
       clearInterval(this.#timer);
       this.#timer = null;
