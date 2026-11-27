@@ -80,7 +80,7 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
         {!micEnabled ? t('mic.closed') : micTransmitting ? t('mic.transmitting') : t('mic.waiting')}
       </div>
     </div>
-    <div className="settings-options settings-options--three voice-control__options" role="group"
+    <div className="settings-options settings-options--three voice-control__options segmented-control" role="group"
       aria-label={t('mic.title')} data-mic-enabled={micEnabled}>
       <button type="button" data-voice-enable className="btn settings-option--divider-after"
         aria-label={t(micEnabled ? 'mic.opened' : 'mic.closed')}

@@ -860,7 +860,7 @@ export default function App() {
 
   const qualityControl = <div className="share-setting quality-control" role="group" aria-label={t('share.quality')} data-video-quality={videoQuality.id}>
     <span className="share-setting__label">{t('share.quality')}</span>
-    <div className="settings-options quality-control__options">
+    <div className="settings-options quality-control__options segmented-control">
       <button type="button" className="btn settings-option--divider-after" data-video-quality-auto
         aria-pressed={videoQuality.id === 'auto'} onClick={() => changeVideoQuality(AUTO_VIDEO_QUALITY)}>
         {t('share.quality.auto')}
@@ -1236,7 +1236,7 @@ export default function App() {
   };
 
   return (
-    <div className={`app${isFloat ? ' app--tiles' : ''}`}>
+    <div className={`app${isTauri ? ' app--tauri' : ''}${isFloat ? ' app--tiles' : ''}`}>
       {/*
         远端语音 / 应用声音的播放器。
 
@@ -1408,13 +1408,13 @@ export default function App() {
       </dialog>
 
       <main
-        className={`app__body${sideCollapsed ? ' app__body--side-collapsed' : ''}`}
+        className={`app__body${sideCollapsed ? ' app__body--side-collapsed' : isTauri ? ' app__body--side-framed' : ''}`}
         ref={bodyRef}
         style={{ '--sidebar-width': `${sideWidth}px` } as React.CSSProperties}
       >
         <aside className="app__side" id="workspace-controls" aria-label={t('sidebar.controls')} hidden={sideCollapsed}>
           <div className="sidebar-header">
-            <div className="sidebar-tabs" role="tablist" aria-label={t('sidebar.controls')}>
+            <div className="sidebar-tabs segmented-control" role="tablist" aria-label={t('sidebar.controls')}>
               {(['room', 'share'] as const).map((page) => <button key={page} id={`sidebar-tab-${page}`} type="button" role="tab" tabIndex={sidePage === page ? 0 : -1} aria-selected={sidePage === page} aria-controls={`sidebar-page-${page}`} className="btn btn--ghost" onClick={() => setSidePage(page)} onKeyDown={(event) => {
                 if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
                 event.preventDefault();
@@ -1638,7 +1638,7 @@ export default function App() {
                 {/* 未共享时也可预设帧率：只记偏好，startShare 时应用 */}
                 <div className="share-setting" role="group" aria-label={t('share.fpsAria')}>
                   <span className="share-setting__label">{t('share.fpsAria')}</span>
-                  <div className="settings-options settings-options--three">
+                  <div className="settings-options settings-options--three segmented-control">
                     {UI_FPS_OPTIONS.map((fps) => (
                       <button
                         key={fps}
