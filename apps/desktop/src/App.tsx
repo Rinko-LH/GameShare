@@ -110,6 +110,8 @@ const [AUTO_VIDEO_QUALITY, ...MANUAL_VIDEO_QUALITIES] = VIDEO_QUALITY_PRESETS;
 
 /** 帧率偏好的 localStorage 键；跨会话记住用户选过哪一档 */
 const SHARE_FPS_STORAGE_KEY = 'gs.shareFps';
+const MIN_SIDEBAR_WIDTH = 252;
+const MAX_SIDEBAR_WIDTH = 480;
 
 export default function App() {
   const [session] = useState(() => new ShareSession());
@@ -204,9 +206,9 @@ export default function App() {
   /**
    * 左侧栏宽度与收起状态（localStorage 记忆：gs.sidebarWidth / gs.sidebarCollapsed）。
    *
-   * 默认 320px，可在侧栏与画面之间拖动调整（252–480px）。顶栏按钮切换显示。
+   * 可在侧栏与画面之间拖动调整。顶栏按钮切换显示。
    */
-  const [sideWidth, setSideWidth] = useState(320);
+  const [sideWidth, setSideWidth] = useState(isTauri ? 300 : 320);
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const pendingSidebarFocus = useRef(false);
   const openSidebarPage = (page: 'room' | 'share') => {
@@ -228,11 +230,11 @@ export default function App() {
   }, [sideCollapsed, sidePage]);
   useEffect(() => {
     const w = Number(window.localStorage.getItem('gs.sidebarWidth'));
-    if (Number.isFinite(w) && w >= 252 && w <= 480) setSideWidth(w);
+    if (Number.isFinite(w) && w >= MIN_SIDEBAR_WIDTH && w <= MAX_SIDEBAR_WIDTH) setSideWidth(w);
     setSideCollapsed(window.localStorage.getItem('gs.sidebarCollapsed') === '1');
   }, []);
   const applySideWidth = useCallback((w: number) => {
-    const next = Math.min(480, Math.max(252, Math.round(w)));
+    const next = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(w)));
     setSideWidth(next);
     window.localStorage.setItem('gs.sidebarWidth', String(next));
   }, []);
@@ -356,9 +358,10 @@ export default function App() {
   /** 本机候选只用于邀请地址选择，不能代替朋友侧的可达性验证。 */
   const publicServerUrls = [...(embeddedServer?.publicV4Urls ?? []), ...(embeddedServer?.publicV6Urls ?? [])];
   const directServerUrls = [...new Set([...(embeddedServer?.lanUrls ?? []), ...publicServerUrls])];
+  const defaultDirectAddress = isTauri || directServerUrls.length === 1 ? directServerUrls[0] ?? null : null;
   const inviteAddress = inRoom && !/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(serverUrl) ? serverUrl
     : connectionConfig.signaling === 'cloudflare' ? tunnelUrl
-    : selectedInviteAddress ?? (connectionConfig.signaling === 'ip' && directServerUrls.length === 1 ? directServerUrls[0] : null);
+    : selectedInviteAddress ?? (connectionConfig.signaling === 'ip' ? defaultDirectAddress : null);
   const validInviteAddress = (() => {
     if (!inviteAddress) return null;
     try { return normalizeSignalingAddress(inviteAddress); } catch { return null; }
@@ -444,6 +447,13 @@ export default function App() {
     const config = resolveInvitationConfig(invite, connectionConfig);
     if (config.signaling !== connectionConfig.signaling || config.mediaPolicy !== connectionConfig.mediaPolicy) changeConnectionConfig(config);
   };
+
+  useEffect(() => {
+    if (!isTauri || inRoom || busy || connection.state === 'connecting' || connectionConfig.mediaPolicy !== 'selected-ip-experimental') return;
+    const addresses = embeddedServer?.mediaAddresses;
+    if (!addresses) return;
+    setSelectedMediaIp(current => addresses.some(item => item.address === current) ? current : addresses[0]?.address ?? '');
+  }, [isTauri, inRoom, busy, connection.state, connectionConfig.mediaPolicy, embeddedServer]);
 
   useEffect(() => {
     if (connectionConfig.mediaPolicy !== 'selected-ip-experimental' || !inRoom || !selectedMediaIp) return;
@@ -1410,7 +1420,7 @@ export default function App() {
       <main
         className={`app__body${sideCollapsed ? ' app__body--side-collapsed' : isTauri ? ' app__body--side-framed' : ''}`}
         ref={bodyRef}
-        style={{ '--sidebar-width': `${sideWidth}px` } as React.CSSProperties}
+        style={{ '--sidebar-width': `${sideWidth}px`, '--sidebar-min-width': `${MIN_SIDEBAR_WIDTH}px` } as React.CSSProperties}
       >
         <aside className="app__side" id="workspace-controls" aria-label={t('sidebar.controls')} hidden={sideCollapsed}>
           <div className="sidebar-header">
@@ -1669,8 +1679,8 @@ export default function App() {
           aria-label={t('sidebar.resize')}
           aria-controls="workspace-controls"
           aria-orientation="vertical"
-          aria-valuemin={252}
-          aria-valuemax={480}
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_SIDEBAR_WIDTH}
           aria-valuenow={sideWidth}
           title={t('sidebar.resizeTitle')}
           onPointerDown={onResizerDown}

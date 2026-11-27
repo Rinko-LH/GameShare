@@ -50,6 +50,7 @@
   color-scheme: dark;
 }
 
+.room-address > .room-address__hint { margin-top: 8px; }
 .room-address__check { margin-top: 4px; }
 .room-address__check a { color: var(--accent); }
 .panel.connection-panel { border-top: 0; padding: 2px 0 12px; }
@@ -92,7 +93,22 @@
 }
 .connection-network legend { padding: 0 4px; color: var(--text); font-weight: 600; }
 .connection-option, .connection-manual__fields { display: grid; gap: 8px; min-width: 0; }
+.app--tauri .connection-network { border: 0; padding: 0; }
+.app--tauri .connection-network > legend { padding: 0; margin-block-end: 8px; }
+.app--tauri .connection-network > .connection-option {
+  margin: 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 .connection-option > .btn--tiny { justify-self: start; }
+.connection-option .btn:has(> .connection-recommendation-star) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.connection-recommendation-star { flex: none; color: var(--accent); }
 .connection-manual > summary { width: fit-content; min-height: 26px; padding: 3px 0; cursor: pointer; color: var(--text-dim); }
 .connection-manual__fields { margin-top: 8px; padding-left: 10px; border-left: 1px solid var(--border-strong); }
 .connection-invite-status:empty { position: absolute; }
@@ -388,7 +404,7 @@ body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: clamp(252px, var(--sidebar-width, 320px), 43vw) 16px minmax(0, 1fr);
+  grid-template-columns: clamp(var(--sidebar-min-width), var(--sidebar-width), 43vw) 16px minmax(0, 1fr);
   padding: 12px 16px 16px;
   overflow: hidden;
 }
@@ -881,6 +897,7 @@ body {
 .segmented-control:has(> :nth-of-type(4)[aria-pressed="true"]) { --selected-segment: 3; }
 
 .app--tauri .segmented-control > .btn { z-index: 1; }
+.app--tauri .connection-media-options:not(:has(> [aria-pressed="true"]))::before { content: none; }
 .app--tauri .segmented-control > :is([aria-pressed="true"], [aria-selected="true"]):not([data-voice-enable]) {
   background: transparent;
   border-color: transparent;
@@ -902,7 +919,15 @@ body {
   border-radius: 8px;
   background: var(--bg-input);
 }
+.app--tauri .voice-control__ptt:has(> .voice-control__shortcut + .voice-control__hold) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+}
 .voice-control__hold { min-height: 36px; }
+.app--tauri .voice-control__hold { min-height: 28px; justify-self: start; }
+.app--tauri .voice-control__shortcut .btn--primary { min-height: 28px; }
 .voice-control__shortcut {
   display: flex;
   flex-wrap: wrap;
@@ -929,6 +954,7 @@ body {
   overflow-wrap: anywhere;
 }
 .voice-control__actions { display: flex; flex-wrap: wrap; gap: 4px; margin-inline-start: auto; }
+.voice-control__shortcut > .voice-control__actions:only-child { margin-inline-start: 0; }
 .voice-control__recorder {
   display: grid;
   justify-items: start;
@@ -1297,6 +1323,9 @@ body {
 .app :where(button, input, select, textarea, summary, a):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+@media (forced-colors: none) {
+  .app--tauri .connection-network select.field__input:focus-visible { outline: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .app :where(.btn, .field__input, .connection-roles label, .sidebar-toggle, .stage__exit-fullscreen, .winctl__btn),

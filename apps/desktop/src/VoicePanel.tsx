@@ -22,13 +22,14 @@ export function useVoiceHotkey(session: ShareSession, binding: VoiceBinding | nu
     revision.current = -1;
     session.setVoiceHeld('keyboard', false);
     const active = Boolean(room && micEnabled && voiceMode === 'push-to-talk' && !recording);
-    if (!api) { setError(active && binding ? t('mic.hotkeyUnavailable') : null); return; }
+    const unavailable = () => t(window.gameShare?.runtime === 'tauri' ? 'mic.shortcutUnavailable' : 'mic.hotkeyUnavailable');
+    if (!api) { setError(active && binding ? unavailable() : null); return; }
     void api.configure({ active, binding }).then(status => {
       if (request.current !== current) return;
       revision.current = status.revision;
       session.setVoiceHeld('keyboard', status.pressed);
       setError(status.error);
-    }).catch(() => { if (request.current === current) setError(t('mic.hotkeyUnavailable')); });
+    }).catch(() => { if (request.current === current) setError(unavailable()); });
     return () => {
       request.current++; revision.current = -1;
       session.setVoiceHeld('keyboard', false);
@@ -45,6 +46,8 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
 }) {
   const state = useSyncExternalStore(session.subscribe, session.getState);
   const { micEnabled, micTransmitting, micError, voiceMode, room } = state;
+  const isTauri = window.gameShare?.runtime === 'tauri';
+  const showTemporaryTalk = isTauri && voiceMode === 'push-to-talk' && !recording && (!binding || Boolean(error));
   const [candidate, setCandidate] = useState<VoiceBinding | null>(null);
   const [keyError, setKeyError] = useState(false);
   const recordRef = useRef<HTMLDivElement>(null);
@@ -57,7 +60,10 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
     document.addEventListener('visibilitychange', hide);
     return () => { window.removeEventListener('blur', release); document.removeEventListener('visibilitychange', hide); release(); };
   }, [session]);
-  useEffect(() => { if (!visible) { session.setVoiceHeld('button', false); setRecording(false); } }, [visible, session]);
+  useEffect(() => {
+    if (!visible || (isTauri && !showTemporaryTalk)) session.setVoiceHeld('button', false);
+    if (!visible) setRecording(false);
+  }, [visible, isTauri, showTemporaryTalk, session]);
   useEffect(() => {
     if (recording) {
       recordRef.current?.focus();
@@ -72,6 +78,18 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
     restoreBindFocus.current = true;
     resetHolds();
   };
+
+  const [holdPrefix, holdSuffix] = t('mic.holdKeyHint').split('{key}');
+  const holdButton = <button type="button" data-voice-hold
+    className={`btn voice-control__hold${isTauri ? ' btn--tiny' : ''}${micTransmitting ? ' btn--primary' : isTauri ? ' btn--ghost' : ''}`}
+    disabled={!micEnabled || !room || recording}
+    onPointerDown={e => { if (e.button !== 0) return; e.currentTarget.setPointerCapture(e.pointerId); session.setVoiceHeld('button', true); }}
+    onPointerUp={() => session.setVoiceHeld('button', false)} onPointerCancel={() => session.setVoiceHeld('button', false)}
+    onLostPointerCapture={() => session.setVoiceHeld('button', false)} onBlur={() => session.setVoiceHeld('button', false)}
+    onKeyDown={e => { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); session.setVoiceHeld('button', true); } }}
+    onKeyUp={e => { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); session.setVoiceHeld('button', false); } }}>
+    {t(isTauri ? 'mic.temporaryTalk' : 'mic.holdButton')}
+  </button>;
 
   return <section className="panel panel--tight voice-control" data-voice-panel>
     <div className="voice-control__header">
@@ -97,27 +115,21 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
         onClick={() => { resetHolds(); session.setVoiceMode(mode); }}>{t(mode === 'continuous' ? 'mic.continuous' : 'mic.pushToTalk')}</button>)}
     </div>
     {voiceMode === 'push-to-talk' && <div className="voice-control__ptt">
-      <button type="button" data-voice-hold className={`btn voice-control__hold${micTransmitting ? ' btn--primary' : ''}`}
-        disabled={!micEnabled || !room || recording}
-        onPointerDown={e => { if (e.button !== 0) return; e.currentTarget.setPointerCapture(e.pointerId); session.setVoiceHeld('button', true); }}
-        onPointerUp={() => session.setVoiceHeld('button', false)} onPointerCancel={() => session.setVoiceHeld('button', false)}
-        onLostPointerCapture={() => session.setVoiceHeld('button', false)} onBlur={() => session.setVoiceHeld('button', false)}
-        onKeyDown={e => { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); session.setVoiceHeld('button', true); } }}
-        onKeyUp={e => { if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); session.setVoiceHeld('button', false); } }}>
-        {t('mic.holdButton')}
-      </button>
-      <div className="voice-control__shortcut">
-        <div className="voice-control__binding">
-          <span className="share-setting__label">{t('mic.hotkey')}</span>
-          {binding
-            ? <kbd data-voice-binding>{describeVoiceBinding(binding)}</kbd>
-            : <span data-voice-binding>{t('mic.unbound')}</span>}
-        </div>
+      {!isTauri && holdButton}
+      {(!isTauri || !recording) && <div className="voice-control__shortcut">
+        {(binding || !isTauri) && <div className="voice-control__binding">
+          {isTauri && binding && !error ? <span>{holdPrefix}<kbd data-voice-binding>{describeVoiceBinding(binding)}</kbd>{holdSuffix}</span> : <>
+            <span className="share-setting__label">{t('mic.hotkey')}</span>
+            {binding
+              ? <kbd data-voice-binding>{describeVoiceBinding(binding)}</kbd>
+              : <span data-voice-binding>{t('mic.unbound')}</span>}
+          </>}
+        </div>}
         {!recording && <div className="voice-control__actions">
-          <button ref={bindRef} type="button" className="btn btn--tiny" data-voice-bind
-            aria-label={t(binding ? 'mic.changeKey' : 'mic.setKey')}
+          <button ref={bindRef} type="button" className={`btn btn--tiny${isTauri && !binding ? ' btn--primary' : ''}`} data-voice-bind
+            aria-label={t(binding ? 'mic.changeKey' : isTauri ? 'mic.setTalkKey' : 'mic.setKey')}
             onClick={() => { resetHolds(); setRecording(true); }}>
-            {t(binding ? 'mic.changeKeyAction' : 'mic.setKeyAction')}
+            {t(binding ? 'mic.changeKeyAction' : isTauri ? 'mic.setTalkKey' : 'mic.setKeyAction')}
           </button>
           {binding && <button type="button" className="btn btn--tiny btn--ghost" data-voice-clear onClick={() => {
             bindRef.current?.focus();
@@ -125,7 +137,7 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
             setBinding(null);
           }}>{t('mic.clearKey')}</button>}
         </div>}
-      </div>
+      </div>}
       {recording && <div ref={recordRef} tabIndex={0} data-voice-recorder className="voice-control__recorder" role="group" aria-labelledby="voice-record-key" onKeyDown={e => {
         if (e.code === 'Escape') {
           e.preventDefault();
@@ -148,6 +160,7 @@ export function VoicePanel({ session, busy, visible, run, binding, setBinding, r
         </div>
       </div>}
       {error && <p className="hint hint--warn" data-voice-key-error>{error}</p>}
+      {showTemporaryTalk && holdButton}
     </div>}
     {micError && <p className="hint hint--warn">{micError}</p>}
   </section>;

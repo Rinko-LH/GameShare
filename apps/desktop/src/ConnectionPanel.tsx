@@ -7,6 +7,22 @@ import type { EmbeddedServerStatus, TunnelStatus } from './types/global';
 import { RoomAddressField } from './RoomAddressField';
 import { fmt, t } from './i18n';
 
+const TAURI_SIGNALING_LABELS = {
+  cloudflare: 'conn.signaling.cloudflareShort',
+  ip: 'conn.signaling.directIpShort',
+  external: 'conn.signaling.publicForwardingShort',
+} as const;
+const TAURI_MEDIA_LABELS = {
+  'internet-auto': 'conn.media.automaticShort',
+  'selected-ip-experimental': 'conn.media.manualIp',
+} as const;
+
+function RecommendationStar() {
+  return <svg className="connection-recommendation-star" width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+    <path fill="currentColor" d="m8 1 2.05 4.2 4.64.67-3.35 3.28.79 4.63L8 11.6l-4.13 2.18.79-4.63L1.31 5.87l4.64-.67Z" />
+  </svg>;
+}
+
 interface Props {
   config: ConnectionConfig;
   onConfig: (config: ConnectionConfig) => void;
@@ -43,6 +59,8 @@ export function ConnectionPanel(props: Props) {
   useEffect(() => { setInvitation(props.initialInvitation); }, [props.initialInvitation]);
   const [error, setError] = useState<string | null>(null);
   const formId = useId();
+  const isTauri = window.gameShare?.runtime === 'tauri';
+  const OptionGroup = isTauri ? 'fieldset' : 'div';
   const parsed = parseInvitation(invitation);
   const locked = props.disabled || props.busy;
   const joining = props.role === 'guest';
@@ -151,34 +169,61 @@ export function ConnectionPanel(props: Props) {
       </>}
       <fieldset className="connection-network">
         <legend>{t('conn.network')}</legend>
-        <div className="connection-option">
-          <label className="ip-connect__field"><span>{t('conn.signaling')}</span>
+        <OptionGroup className="connection-option">
+          {isTauri ? <>
+            <legend id={`${formId}-signaling-title`}>{t('conn.signaling.roomConnection')}</legend>
+            <div className="settings-options settings-options--three segmented-control" role="group" aria-labelledby={`${formId}-signaling-title`}>
+              {(Object.keys(TAURI_SIGNALING_LABELS) as Array<ConnectionConfig['signaling']>).map(value => (
+                <button key={value} type="button" className="btn" data-signaling={value} aria-pressed={signaling === value}
+                  aria-label={value === 'cloudflare' ? fmt('conn.recommendedOption', { option: t(TAURI_SIGNALING_LABELS[value]) }) : undefined}
+                  title={value === 'cloudflare' ? t('conn.recommended') : undefined}
+                  disabled={locked || inherited} onClick={() => { if (signaling !== value) props.onConfig({ ...props.config, signaling: value }); }}>
+                  {value === 'cloudflare' && <RecommendationStar />}
+                  {t(TAURI_SIGNALING_LABELS[value])}
+                </button>
+              ))}
+            </div>
+          </> : <label className="ip-connect__field"><span>{t('conn.signaling')}</span>
             <select data-signaling className="field__input field__input--compact" value={signaling} disabled={locked || inherited} onChange={event => props.onConfig({ ...props.config, signaling: event.target.value as ConnectionConfig['signaling'] })}>
               {SIGNALING_METHODS.map(({ value }) => <option key={value} value={value}>{t(`conn.signaling.${value}`)}</option>)}
             </select>
-          </label>
+          </label>}
           {!joining && !cloud && <>
-            <RoomAddressField source={signaling === 'external' ? 'external' : 'local'} addresses={addresses} value={props.inviteAddress} onChange={props.onInviteAddress} disabled={locked} />
+            <RoomAddressField source={signaling === 'external' ? 'external' : 'local'} addresses={addresses} value={props.inviteAddress} onChange={props.onInviteAddress} disabled={locked} hideLocalLabel={isTauri} externalHint={isTauri ? t('conn.publicForwardingHint') : undefined} />
             {signaling === 'ip' && <button className="btn btn--tiny" type="button" disabled={locked} onClick={refresh}>{t('ip.refresh')}</button>}
           </>}
-        </div>
-        <div className="connection-option">
-          <label className="ip-connect__field"><span>{t('conn.media')}</span>
+        </OptionGroup>
+        <OptionGroup className="connection-option">
+          {isTauri ? <>
+            <legend id={`${formId}-media-title`}>{t('conn.media.streamConnection')}</legend>
+            <div className="settings-options segmented-control connection-media-options" role="group" aria-labelledby={`${formId}-media-title`}>
+              {(Object.keys(TAURI_MEDIA_LABELS) as Array<keyof typeof TAURI_MEDIA_LABELS>).map(value => (
+                <button key={value} type="button" className="btn" data-media-policy={value} aria-pressed={mediaPolicy === value}
+                  aria-label={value === 'internet-auto' ? fmt('conn.recommendedOption', { option: t(TAURI_MEDIA_LABELS[value]) }) : undefined}
+                  title={value === 'internet-auto' ? t('conn.recommended') : undefined}
+                  disabled={locked || inherited} onClick={() => { if (mediaPolicy !== value) props.onConfig({ ...props.config, mediaPolicy: value }); }}>
+                  {value === 'internet-auto' && <RecommendationStar />}
+                  {t(TAURI_MEDIA_LABELS[value])}
+                </button>
+              ))}
+            </div>
+            {mediaPolicy === 'local-auto' && <p className="hint">{t('conn.media.local-auto')}</p>}
+          </> : <label className="ip-connect__field"><span>{t('conn.media')}</span>
             <select data-media-policy className="field__input field__input--compact" value={mediaPolicy} disabled={locked || inherited} onChange={event => props.onConfig({ ...props.config, mediaPolicy: event.target.value as ConnectionConfig['mediaPolicy'] })}>
               {MEDIA_STRATEGIES.map(({ value }) => <option key={value} value={value}>{t(`conn.media.${value}`)}</option>)}
             </select>
-          </label>
+          </label>}
           {selectedIp && <>
-            <label className="ip-connect__field"><span>{t('conn.mediaIp')}</span>
-              <select data-media-ip className="field__input field__input--compact media-ip-select" value={props.mediaIp} disabled={locked} aria-describedby={`${formId}-media-hint`} onChange={event => props.onMediaIp(event.target.value)}>
-                <option value="">{t('conn.chooseMediaIp')}</option>
+            <label className="ip-connect__field">{!isTauri && <span>{t('conn.mediaIp')}</span>}
+              <select data-media-ip className="field__input field__input--compact media-ip-select" value={props.mediaIp} disabled={locked} aria-label={isTauri ? t('conn.mediaIp') : undefined} aria-describedby={`${formId}-media-hint`} onChange={event => props.onMediaIp(event.target.value)}>
+                <option value="" disabled={isTauri}>{t('conn.chooseMediaIp')}</option>
                 {(props.server?.mediaAddresses ?? []).map(item => <option key={`${item.interfaceName}/${item.address}`} value={item.address}>{item.interfaceName} · {item.address} ({item.family})</option>)}
               </select>
             </label>
-            <p id={`${formId}-media-hint`} className="hint">{t('conn.mediaIpHint')}</p>
+            <p id={`${formId}-media-hint`} className="hint">{t(isTauri ? 'conn.mediaIpVirtualLanHint' : 'conn.mediaIpHint')}</p>
             <button className="btn btn--tiny" type="button" disabled={locked} onClick={refresh}>{t('conn.refreshMediaIp')}</button>
           </>}
-        </div>
+        </OptionGroup>
       </fieldset>
       {shownError && <p id={`${formId}-error`} className="hint hint--warn connection-error" role="alert">{shownError}</p>}
       <button className="btn btn--primary connection-submit" type="submit" disabled={locked || (selectedIp && !props.mediaIp) || (joining && (Boolean(invitationError) || (!invitation.trim() && !address.trim())))}>
