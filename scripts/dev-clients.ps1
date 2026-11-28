@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$repo = $PSScriptRoot
+$repo = Split-Path -Parent $PSScriptRoot
 $target = $env:CARGO_TARGET_DIR
 if (-not $target) { $target = Join-Path $repo '.cache\tauri-target' }
 if (-not [IO.Path]::IsPathRooted($target)) { $target = Join-Path $repo $target }

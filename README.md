@@ -149,6 +149,7 @@ npm run build:desktop  # 编译 Tauri 测试 EXE
 | --- | --- |
 | `run.bat` | 启动 `../release` 中最新的 Tauri 便携版 |
 | `dev.bat` | 从源码启动 Tauri 开发版 |
+| `dev-two.bat` | 启动两个 Tauri 开发实例，共用一个 Vite 服务，各自使用独立的 WebView2 配置 |
 | `dev-three.bat` | 启动三个 Tauri 开发实例，共用一个 Vite 服务，各自使用独立的 WebView2 配置 |
 | `build-exe.bat` | 编译 Tauri 测试 EXE |
 | `diagnose-capture.bat` | 诊断旧版 Electron 的窗口枚举 |
