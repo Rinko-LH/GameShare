@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-type ViewerIconName = 'voice' | 'speaker' | 'picture' | 'focus' | 'grid' | 'floating' | 'fullscreen' | 'exit-fullscreen';
+type ViewerIconName = 'voice' | 'speaker' | 'picture' | 'focus' | 'grid' | 'floating' | 'fullscreen';
 
 const shapes: Record<ViewerIconName, ReactNode> = {
   voice: <>
@@ -24,7 +24,6 @@ const shapes: Record<ViewerIconName, ReactNode> = {
     <rect x="7.25" y="7.25" width="7" height="5.5" rx=".75" />
   </>,
   fullscreen: <path d="M6 2.5H2.5V6m7.5-3.5h3.5V6m0 4v3.5H10m-4 0H2.5V10" />,
-  'exit-fullscreen': <path d="M2.5 6H6V2.5m4 0V6h3.5m0 4H10v3.5m-4 0V10H2.5" />,
 };
 
 const offShapes: Partial<Record<ViewerIconName, ReactNode>> = {

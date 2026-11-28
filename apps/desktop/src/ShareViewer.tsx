@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { fmt, useI18n } from './i18n';
 import { HoverVolume, type VolumeChannel } from './HoverVolume';
 import { ViewerIcon } from './ViewerIcon';
@@ -26,7 +26,6 @@ interface ShareViewerProps {
   floating: boolean;
   fullscreen: boolean;
   busy: boolean;
-  globalMuted: boolean;
   floatingCount: number;
   modeError?: string | null;
   opacity?: { value: number; min: number; onChange: (value: number) => void };
@@ -35,7 +34,6 @@ interface ShareViewerProps {
   onFocus: (peerId: string) => void;
   onToggleFloat: () => void;
   onToggleFullscreen: () => void;
-  onToggleGlobalMute: () => void;
   onToggleVoice: (peerId: string) => void;
   onToggleShareAudio: (peerId: string) => void;
   onTogglePicture: (peerId: string) => void;
@@ -44,14 +42,13 @@ interface ShareViewerProps {
 }
 
 export function ShareViewer({
-  participants, layout, focusedPeerId, floating, fullscreen, busy, globalMuted, floatingCount, modeError, opacity, empty,
-  onLayoutChange, onFocus, onToggleFloat, onToggleFullscreen, onToggleGlobalMute,
+  participants, layout, focusedPeerId, floating, fullscreen, busy, floatingCount, modeError, opacity, empty,
+  onLayoutChange, onFocus, onToggleFloat, onToggleFullscreen,
   onToggleVoice, onToggleShareAudio, onTogglePicture, onVolumeChange, renderMedia,
 }: ShareViewerProps) {
   const t = useI18n();
   const mainCard = useRef<HTMLElement>(null);
   const focusMainCard = useRef(false);
-  const globalMuteHint = useId();
   const screens = participants.filter((peer) => peer.sharing);
   const main = screens.find((peer) => peer.id === focusedPeerId) ?? screens[0];
   const roster = participants.filter((peer) => floating || !peer.sharing);
@@ -66,8 +63,6 @@ export function ShareViewer({
   const audioControls = (peer: ShareViewerParticipant) => (
     <ParticipantControls
       peer={peer}
-      globalMuted={globalMuted}
-      globalMuteHint={globalMuteHint}
       onToggleVoice={onToggleVoice}
       onToggleShareAudio={onToggleShareAudio}
       onTogglePicture={onTogglePicture}
@@ -92,16 +87,6 @@ export function ShareViewer({
           <span className="share-viewer__name" title={peer.name}>{peer.name}</span>
           <div className="share-viewer__card-actions">
             {audioControls(peer)}
-            {!focused && (
-              <button type="button" className="share-viewer__button share-viewer__icon-button" data-viewer-action="focus"
-                aria-label={`${focusLabel} · ${peer.name}`} title={focusLabel}
-                onClick={(event) => {
-                  focusMainCard.current = event.detail === 0;
-                  onFocus(peer.id);
-                }}>
-                <ViewerIcon name="focus" />
-              </button>
-            )}
           </div>
         </div>
         <div className="share-viewer__picture">
@@ -111,6 +96,14 @@ export function ShareViewer({
               <span>{t(peer.shareAudioPaused ? 'view.pictureAndAudioPaused' : 'view.pictureHidden')}</span>
             </div>
           ) : renderMedia(peer, variant)}
+          {!focused && (
+            <button type="button" className="share-viewer__picture-trigger" data-viewer-action="focus"
+              aria-label={`${focusLabel} · ${peer.name}`}
+              onClick={(event) => {
+                focusMainCard.current = event.detail === 0;
+                onFocus(peer.id);
+              }} />
+          )}
         </div>
       </article>
     );
@@ -118,7 +111,7 @@ export function ShareViewer({
 
   return (
     <div className="share-viewer" data-share-viewer data-layout={layout} data-floating={floating}>
-      <div className="share-viewer__toolbar">
+      <div className="share-viewer__toolbar" hidden={fullscreen}>
         {!floating && (
           <div className="share-viewer__layout" role="group" aria-label={t('view.layout')}>
             <button type="button" className="share-viewer__button" data-viewer-action="layout-focus"
@@ -140,20 +133,12 @@ export function ShareViewer({
             <span>{t(floating ? 'view.exitFloat' : 'float.mode')}</span>
           </button>
           <button type="button" className="share-viewer__button" data-viewer-action="fullscreen"
-            disabled={busy || (!fullscreen && screens.length === 0)} aria-pressed={fullscreen}
-            aria-keyshortcuts={fullscreen ? 'Escape' : undefined} onClick={onToggleFullscreen}>
-            <ViewerIcon name={fullscreen ? 'exit-fullscreen' : 'fullscreen'} />
-            <span>{t(fullscreen ? 'view.exitFullscreen' : 'view.fullscreen')}</span>
+            disabled={busy || screens.length === 0} onClick={onToggleFullscreen}>
+            <ViewerIcon name="fullscreen" />
+            <span>{t('view.fullscreen')}</span>
           </button>
         </div>
-        <button type="button" className="share-viewer__button share-viewer__mute-all" data-viewer-action="mute-all"
-          aria-pressed={globalMuted} disabled={participants.length === 0 && !globalMuted}
-          onClick={onToggleGlobalMute}>
-          <ViewerIcon name="speaker" off={globalMuted} />
-          <span>{t(globalMuted ? 'view.unmuteAll' : 'view.muteAll')}</span>
-        </button>
       </div>
-      {globalMuted && <p className="share-viewer__status" id={globalMuteHint} role="status">{t('view.globalMuteHint')}</p>}
       {modeError && <p className="share-viewer__error" role="alert">{modeError}</p>}
       {floating ? (
         <div className="share-viewer__floating">
@@ -202,21 +187,18 @@ export function ShareViewer({
   );
 }
 
-interface ParticipantControlsProps extends Pick<ShareViewerProps, 'globalMuted' | 'onToggleVoice' | 'onToggleShareAudio' | 'onTogglePicture' | 'onVolumeChange'> {
+interface ParticipantControlsProps extends Pick<ShareViewerProps, 'onToggleVoice' | 'onToggleShareAudio' | 'onTogglePicture' | 'onVolumeChange'> {
   peer: ShareViewerParticipant;
-  globalMuteHint: string;
 }
 
 function ParticipantControls({
-  peer, globalMuted, globalMuteHint, onToggleVoice, onToggleShareAudio, onTogglePicture, onVolumeChange,
+  peer, onToggleVoice, onToggleShareAudio, onTogglePicture, onVolumeChange,
 }: ParticipantControlsProps) {
   const t = useI18n();
-  const globalHint = globalMuted ? t('view.globalMuteHint') : undefined;
-  const voiceMuted = globalMuted || Boolean(peer.voiceMuted);
+  const voiceMuted = Boolean(peer.voiceMuted);
   const sharePaused = Boolean(peer.shareAudioPaused);
-  const audioMuted = globalMuted || Boolean(peer.shareAudioMuted) || sharePaused;
+  const audioMuted = Boolean(peer.shareAudioMuted) || sharePaused;
   const muteClass = 'share-viewer__button share-viewer__icon-button share-viewer__mute';
-  const describedBy = globalMuted ? globalMuteHint : undefined;
   const shareAudioAction = peer.pictureHidden
     ? t(sharePaused ? 'view.resumeIncomingShareAudio' : 'view.pauseIncomingShareAudio')
     : t(audioMuted ? 'view.unmuteShareAudio' : 'view.muteShareAudio');
@@ -225,17 +207,16 @@ function ParticipantControls({
     <div className="share-viewer__peer-controls" role="group" aria-label={`${t('view.localControls')} · ${peer.name}`}>
       <div className="share-viewer__peer-buttons">
         <HoverVolume channel="voice" muted={voiceMuted} value={peer.voiceVolume ?? 1} label={t('view.voiceVolume')}
-          disabled={globalMuted} onChange={(value) => onVolumeChange(peer.id, 'voice', value)}
+          onChange={(value) => onVolumeChange(peer.id, 'voice', value)}
           button={{ className: muteClass, 'data-viewer-action': 'voice', 'aria-label': t('view.muteVoice'),
-            'aria-pressed': voiceMuted, 'aria-disabled': globalMuted, 'aria-describedby': describedBy,
-            title: globalHint ?? t(voiceMuted ? 'view.unmuteVoice' : 'view.muteVoice'),
-            onClick: () => { if (!globalMuted) onToggleVoice(peer.id); } }} />
+            'aria-pressed': voiceMuted,
+            title: t(voiceMuted ? 'view.unmuteVoice' : 'view.muteVoice'),
+            onClick: () => onToggleVoice(peer.id) }} />
         <HoverVolume channel="share" muted={audioMuted} value={peer.shareAudioVolume ?? 1} label={t('view.shareVolume')}
-          disabled={globalMuted || sharePaused} onChange={(value) => onVolumeChange(peer.id, 'share', value)}
+          disabled={sharePaused} onChange={(value) => onVolumeChange(peer.id, 'share', value)}
           button={{ className: muteClass, 'data-viewer-action': 'share-audio', 'aria-label': shareAudioAction,
-            'aria-pressed': audioMuted, 'aria-disabled': globalMuted, 'aria-describedby': describedBy,
-            title: globalHint ?? shareAudioAction,
-            onClick: () => { if (!globalMuted) onToggleShareAudio(peer.id); } }} />
+            'aria-pressed': audioMuted, title: shareAudioAction,
+            onClick: () => onToggleShareAudio(peer.id) }} />
         {peer.sharing && (
           <button type="button" className="share-viewer__button share-viewer__icon-button share-viewer__mute"
             data-viewer-action="picture" aria-label={t('view.hidePicture')} aria-pressed={Boolean(peer.pictureHidden)}

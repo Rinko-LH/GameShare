@@ -292,9 +292,8 @@ export default function App() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }, []);
 
-  /** 按成员保存本机分轨播放偏好。全局静音只覆盖播放状态。 */
+  /** 按成员保存本机分轨播放偏好。 */
   const [peerAudio, setPeerAudio] = useState<Record<string, PeerAudioPref>>({});
-  const [globalMuted, setGlobalMuted] = useState(false);
   const shareReceptionPauses = useMemo(() => {
     const pauses = new Map<string, ShareReceptionPause>();
     for (const [peerId, pref] of Object.entries(peerAudio)) {
@@ -349,7 +348,6 @@ export default function App() {
     if (!isTauri || inRoom) return;
     setViewerLayout('focus');
     setViewerFocus(null);
-    setGlobalMuted(false);
     setPeerAudio({});
     setViewError(null);
   }, [inRoom, isTauri]);
@@ -910,7 +908,6 @@ export default function App() {
   }, []);
 
   const togglePeerChannel = useCallback((peerId: string, channel: 'voice' | 'share'): void => {
-    if (globalMuted) return;
     const key = channel === 'voice' ? 'voiceMuted' : 'appMuted';
     setPeerAudio((prev) => {
       const pref = prev[peerId] ?? DEFAULT_PEER_AUDIO;
@@ -922,7 +919,7 @@ export default function App() {
       }
       return { ...prev, [peerId]: { ...pref, [key]: !pref[key] } };
     });
-  }, [globalMuted]);
+  }, []);
 
   const togglePeerPicture = useCallback((peerId: string): void => {
     setPeerAudio((prev) => {
@@ -1128,8 +1125,8 @@ export default function App() {
       sharing: Boolean(remoteSharing[peer.peerId]),
       pictureHidden: shareReceptionPause !== null,
       shareAudioPaused: shareReceptionPause === 'picture-and-audio',
-      voiceMuted: globalMuted || voiceMuted,
-      shareAudioMuted: globalMuted || appMuted,
+      voiceMuted,
+      shareAudioMuted: appMuted,
       voiceVolume: voiceVol,
       shareAudioVolume: appVol,
     };
@@ -1275,19 +1272,18 @@ export default function App() {
       return {
         peerId: peer.peerId,
         name: peer.nickname,
-        muted: isTauri ? globalMuted || pref.appMuted : pref.masterMuted,
+        muted: isTauri ? pref.appMuted : pref.masterMuted,
         volume: pref.masterVol,
         ...(isTauri && {
-          voiceMuted: globalMuted || pref.voiceMuted,
+          voiceMuted: pref.voiceMuted,
           voiceVolume: pref.voiceVol,
           shareVolume: pref.appVol,
-          globalMuted,
           pictureHidden: pref.shareReceptionPause !== null,
           shareAudioPaused: pref.shareReceptionPause === 'picture-and-audio',
         }),
       };
     }),
-    [floatPeers, globalMuted, isTauri, peerAudioOf],
+    [floatPeers, isTauri, peerAudioOf],
   );
 
   /**
@@ -1423,7 +1419,6 @@ export default function App() {
         prefOf={peerAudioOf}
         remoteSharing={remoteSharing}
         selfPeerId={room?.self.peerId}
-        globalMuted={globalMuted}
       />
       <header className="app__header">
         <div className="app__header-left">
@@ -1913,7 +1908,6 @@ export default function App() {
               floating={isFloat}
               fullscreen={stageFullscreen}
               busy={floatBusy || !floatWindow}
-              globalMuted={globalMuted}
               floatingCount={tiles?.tiles.length ?? 0}
               modeError={viewError ? t(viewError) : null}
               opacity={floatWindow ? { value: floatWindow.opacity, min: floatWindow.minOpacity, onChange: (value) => void handleOpacity(value) } : undefined}
@@ -1934,7 +1928,6 @@ export default function App() {
               }}
               onToggleFloat={() => void handleToggleFloat(!isFloat)}
               onToggleFullscreen={() => void handleMainView()}
-              onToggleGlobalMute={() => setGlobalMuted((muted) => !muted)}
               onToggleVoice={(peerId) => togglePeerChannel(peerId, 'voice')}
               onToggleShareAudio={(peerId) => togglePeerChannel(peerId, 'share')}
               onTogglePicture={togglePeerPicture}
@@ -2352,7 +2345,6 @@ function RemoteAudioOutlet({
   prefOf,
   remoteSharing,
   selfPeerId,
-  globalMuted,
 }: {
   /** 房间里的远端成员（不含自己） */
   peers: readonly PeerInfo[];
@@ -2364,7 +2356,6 @@ function RemoteAudioOutlet({
   remoteSharing: Record<string, boolean>;
   /** 自己的 peerId */
   selfPeerId: string | undefined;
-  globalMuted: boolean;
 }) {
   /**
    * 「该给谁放声音」交给纯函数判据（`packages/shared/src/voice-audience.ts`），
@@ -2388,7 +2379,6 @@ function RemoteAudioOutlet({
           peerId={peerId}
           tracks={tracks[peerId] ?? null}
           pref={prefOf(peerId)}
-          globalMuted={globalMuted}
         />
       ))}
     </>
@@ -2405,12 +2395,10 @@ function RemoteAudioPair({
   peerId,
   tracks,
   pref,
-  globalMuted,
 }: {
   peerId: string;
   tracks: RemoteTracks | null;
   pref: PeerAudioPref;
-  globalMuted: boolean;
 }) {
   const voiceRef = useRef<HTMLAudioElement | null>(null);
   const appAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -2432,8 +2420,8 @@ function RemoteAudioPair({
    */
   useEffect(() => {
     const pairs: Array<[HTMLAudioElement | null, MediaStream | null, boolean, number]> = [
-      [voiceRef.current, voiceStream, globalMuted || pref.masterMuted || pref.voiceMuted, pref.voiceVol * pref.masterVol],
-      [appAudioRef.current, appAudioStream, pref.shareReceptionPause === 'picture-and-audio' || globalMuted || pref.masterMuted || pref.appMuted, pref.appVol * pref.masterVol],
+      [voiceRef.current, voiceStream, pref.masterMuted || pref.voiceMuted, pref.voiceVol * pref.masterVol],
+      [appAudioRef.current, appAudioStream, pref.shareReceptionPause === 'picture-and-audio' || pref.masterMuted || pref.appMuted, pref.appVol * pref.masterVol],
     ];
     for (const [el, nextStream, muted, volume] of pairs) {
       if (!el) continue;
@@ -2442,7 +2430,7 @@ function RemoteAudioPair({
       if (el.srcObject !== nextStream) el.srcObject = nextStream;
       if (nextStream) void el.play().catch(() => undefined);
     }
-  }, [voiceStream, appAudioStream, pref, globalMuted]);
+  }, [voiceStream, appAudioStream, pref]);
 
   return (
     <>

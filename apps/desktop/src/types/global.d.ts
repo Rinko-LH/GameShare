@@ -215,7 +215,6 @@ export interface FloatTilePeer {
   voiceVolume?: number;
   shareVolume?: number;
   voiceMuted?: boolean;
-  globalMuted?: boolean;
   pictureHidden?: boolean;
   shareAudioPaused?: boolean;
 }

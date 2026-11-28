@@ -61,11 +61,10 @@ export default function TauriFloatTile({ label }: { label: string }) {
   }, [label]);
 
   const name = peerState?.name ?? t('tileFloat.defaultPeer');
-  const globalMuted = peerState?.globalMuted ?? false;
-  const voiceMuted = globalMuted || (peerState?.voiceMuted ?? false);
+  const voiceMuted = peerState?.voiceMuted ?? false;
   const pictureHidden = peerState?.pictureHidden ?? false;
   const sharePaused = peerState?.shareAudioPaused ?? false;
-  const shareMuted = sharePaused || globalMuted || (peerState?.muted ?? false);
+  const shareMuted = sharePaused || (peerState?.muted ?? false);
   const shareAudioAction = pictureHidden
     ? t(sharePaused ? 'view.resumeIncomingShareAudio' : 'view.pauseIncomingShareAudio')
     : t(shareMuted ? 'view.unmuteShareAudio' : 'view.muteShareAudio');
@@ -97,16 +96,16 @@ export default function TauriFloatTile({ label }: { label: string }) {
             <ViewerIcon name="picture" off={pictureHidden} />
           </button>
           <HoverVolume channel="voice" muted={voiceMuted} value={peerState?.voiceVolume ?? 1} label={t('view.voiceVolume')}
-            disabled={!peerState || globalMuted} onChange={(value) => changeVolume('voice', value)}
+            disabled={!peerState} onChange={(value) => changeVolume('voice', value)}
             button={{ className: 'tilewin__action', 'data-float-action': 'voice', 'aria-label': t('view.muteVoice'),
-              'aria-pressed': voiceMuted, disabled: !peerState || globalMuted,
-              title: t(globalMuted ? 'view.globalMuteHint' : voiceMuted ? 'view.unmuteVoice' : 'view.muteVoice'),
+              'aria-pressed': voiceMuted, disabled: !peerState,
+              title: t(voiceMuted ? 'view.unmuteVoice' : 'view.muteVoice'),
               onClick: () => void sendTileSignal(label, { kind: 'mute-voice' }).catch(console.error) }} />
           <HoverVolume channel="share" muted={shareMuted} value={peerState?.shareVolume ?? 1} label={t('view.shareVolume')}
-            disabled={!peerState || globalMuted || sharePaused} onChange={(value) => changeVolume('share', value)}
+            disabled={!peerState || sharePaused} onChange={(value) => changeVolume('share', value)}
             button={{ className: 'tilewin__action', 'data-float-action': 'share-audio', 'aria-label': shareAudioAction,
-              'aria-pressed': shareMuted, disabled: !peerState || globalMuted,
-              title: globalMuted ? t('view.globalMuteHint') : shareAudioAction,
+              'aria-pressed': shareMuted, disabled: !peerState,
+              title: shareAudioAction,
               onClick: () => void sendTileSignal(label, { kind: 'mute' }).catch(console.error) }} />
           <button type="button" className="tilewin__action" aria-label={t('win.close')} title={t('win.close')}
             onClick={() => void native('plugin:window|close').catch(console.error)}>

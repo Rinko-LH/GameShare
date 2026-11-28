@@ -335,9 +335,7 @@ try {
       await click(guest.evaluate, '[data-voice-mode="continuous"]');
       await click(guest.evaluate, '[data-voice-enable]');
       await until(() => guest.evaluate('window.__viewerTestMic?.track.enabled && document.querySelector("[data-mic-enabled=true]") !== null'), 'voice-only member transmits');
-      await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === true, 'new voice-only member inherits global mute');
-      await click(hostEval, control('mute-all'));
-      await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === false, 'global unmute restores new member audio');
+      await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === false, 'new member voice is audible');
       await click(hostEval, `${secondPeer} ${control('voice')}`);
       await until(() => audioMuted(hostEval, secondPeerId, 'voice'), 'voice-only member can be locally muted');
       await click(hostEval, `${secondPeer} ${control('voice')}`);
@@ -420,7 +418,6 @@ try {
       firstPeerId = await until(() => peerNamed(hostEval, 'Guest 1'), 'first shared video appears in viewer');
       await until(async () => await selectedPeer(hostEval) === firstPeerId, 'first share is focused by default');
       assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'focus');
-      await click(hostEval, control('mute-all'));
     }
     if (i === 2) {
       await until(async () => await decodedShares(guest.evaluate) === 1, 'only the other shared screen is visible while sharing');
@@ -455,7 +452,7 @@ try {
   assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'grid');
   await until(async () => await decodedShares(hostEval) === 3, 'grid displays all live shares');
   await screenshot(hostEval, 'viewer-grid');
-  await click(hostEval, `${secondPeer} ${control('focus')}`);
+  await clickScreenPoint(hostEval, `${secondPeer} .share-viewer__picture ${control('focus')}`);
   assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'focus');
   assert.equal(await selectedPeer(hostEval), secondPeerId);
   await until(async () => await decodedShares(hostEval) === 3, 'focus layout keeps all live shares accessible');
@@ -503,11 +500,8 @@ try {
   }, 'incoming video and share audio resume');
   await until(() => hostEval(`${query(`${secondPeer} video`)}?.videoWidth > 0`), 'restored share shows live video');
 
-  await click(hostEval, control('mute-all'));
-  await until(() => hostEval('document.querySelectorAll("audio[data-audio-peer]").length > 2 && [...document.querySelectorAll("audio[data-audio-peer]")].every(audio => audio.muted)'), 'global mute silences every received audio role');
-  await click(hostEval, control('mute-all'));
-  await until(async () => await audioMuted(hostEval, secondPeerId, 'share') === false, 'global unmute restores previously enabled shared audio');
-  assert.equal(await audioMuted(hostEval, secondPeerId, 'voice'), true, 'Global mute must preserve individual preferences');
+  await until(async () => await audioMuted(hostEval, secondPeerId, 'share') === false, 'resuming reception restores previously enabled shared audio');
+  assert.equal(await audioMuted(hostEval, secondPeerId, 'voice'), true, 'Resuming reception must preserve the voice mute');
   await click(hostEval, voiceControl);
   await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === false, 'restore voice');
 
@@ -526,10 +520,12 @@ try {
     throw error;
   }
   if (!captureTitle) await until(() => firstSenderHasThumbnailLinks(1), 'fullscreen focus keeps the thumbnail limits');
+  await until(() => hostEval(`${query('.share-viewer__toolbar')}.getClientRects().length === 0`), 'fullscreen hides the viewer toolbar');
   await screenshot(hostEval, 'viewer-fullscreen');
-  await clickScreenPoint(hostEval, fullscreenControl);
+  await pressKey(hostEval, 'Escape', 27);
   await until(() => hostEval(`document.fullscreenElement === null &&
-    innerWidth === ${normalBounds[0]} && innerHeight === ${normalBounds[1]}`), 'exiting fullscreen restores the previous window dimensions');
+    innerWidth === ${normalBounds[0]} && innerHeight === ${normalBounds[1]} &&
+    ${query('.share-viewer__toolbar')}.getClientRects().length > 0`), 'Escape restores the normal window and toolbar');
   assert.equal(await selectedPeer(hostEval), secondPeerId, 'Fullscreen round trip must preserve selection');
   console.log('PASS: layouts, fullscreen, local mutes, and incoming share RTP pause with voice retained');
 
@@ -650,10 +646,10 @@ try {
   await float('document.querySelector(\'.tilewin__bar button[aria-label="关闭"]\').click()');
   await until(async () => (await host.list()).filter((entry) => entry.url.includes('floatTile=')).length === 1, 'close button removed only its own float window');
   await hostEval(`window.gameShare.floatTiles.onStatus(status => { window.__viewerTestFloatStatus = status; });`);
-  await click(hostEval, control('mute-all'));
-  const updatedFloats = await until(() => hostEval('window.__viewerTestFloatStatus'), 'global mute resynchronized floating windows');
-  assert.equal(updatedFloats.tiles.length, 1, 'Changing global mute must keep a manually closed float dismissed');
-  assert.equal((await floatWindows()).length, 1, 'Changing global mute must keep a manually closed float dismissed');
+  await click(hostEval, voiceControl);
+  const updatedFloats = await until(() => hostEval('window.__viewerTestFloatStatus'), 'member mute resynchronized floating windows');
+  assert.equal(updatedFloats.tiles.length, 1, 'Changing member mute must keep a manually closed float dismissed');
+  assert.equal((await floatWindows()).length, 1, 'Changing member mute must keep a manually closed float dismissed');
   await hostEval('window.gameShare.windowMode.setEnabled(false)');
   await until(async () => !(await host.list()).some((entry) => entry.url.includes('floatTile=')), 'disabling float mode closed all float windows');
   console.log('PASS: stopping share, closing one float, and disabling float mode cleaned up the windows');
