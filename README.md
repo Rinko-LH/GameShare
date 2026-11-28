@@ -21,7 +21,9 @@ GameShare 是面向熟人小队的 Windows 画面共享工具。每个人都可�
 
 面向 Windows 10 / 11 x64，需要 WebView2 Evergreen Runtime。使用应用声音共享时推荐 Windows 11。
 
-本仓库的 GitHub Releases 暂无 Windows 安装包或便携包，可以按下方说明从源码运行。 [查看发布页](https://github.com/Rinko-LH/GameShare/releases)
+在发布页的 **Assets** 中下载 Windows x64 便携 ZIP，文件名以 `-portable-cloudflare.zip` 结尾。 [下载 GameShare](https://github.com/Rinko-LH/GameShare/releases)
+
+完整解压后，双击 `GameShare-Tauri` 开头的 EXE。将随包的 `cloudflared.exe` 保留在主程序同一目录，即可使用 Cloudflare 临时邀请网址。
 
 ## 快速开始
 

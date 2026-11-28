@@ -21,7 +21,9 @@ GameShare is a Windows screen-sharing app for groups of friends. Everyone in a r
 
 GameShare targets Windows 10 / 11 x64 and requires the WebView2 Evergreen Runtime. Windows 11 is recommended for sharing app audio.
 
-This repository currently has no Windows installer or portable download. Use the steps below to run from source. [GitHub Releases](https://github.com/Rinko-LH/GameShare/releases)
+Under **Assets** on the release page, download the Windows x64 portable ZIP ending in `-portable-cloudflare.zip`. [Download GameShare](https://github.com/Rinko-LH/GameShare/releases)
+
+Extract the full ZIP, then run the EXE whose name starts with `GameShare-Tauri`. Keep the bundled `cloudflared.exe` next to the app to use temporary Cloudflare invite links.
 
 ## Quick start
 

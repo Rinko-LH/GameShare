@@ -361,14 +361,17 @@ try {
       await until(() => hostEval(`!${query(openVolume('voice'))}`), 'voice slider closes on pointer leave');
     }
     const useRealCapture = i === 1 && captureTitle;
-    if (i === 1 && !useRealCapture) {
+    const testVideoScaling = i === 1 && !useRealCapture;
+    if (testVideoScaling || i === 2) {
       await guest.evaluate(`(() => {
-        // The built-in test pattern is 360p. Use a larger canvas to exercise downscaling.
         const captureStream = HTMLCanvasElement.prototype.captureStream;
         HTMLCanvasElement.prototype.captureStream = function (...args) {
           if (this.width !== 640 || this.height !== 360) return captureStream.apply(this, args);
-          this.width = 1280;
-          this.height = 720;
+          // The first guest needs a larger source for downscaling. The second guest tests the audio controls.
+          if (${testVideoScaling}) {
+            this.width = 1280;
+            this.height = 720;
+          }
           const stream = captureStream.apply(this, args);
           // Supply an audio fixture for the shared-audio control checks.
           const context = new AudioContext();
@@ -382,6 +385,10 @@ try {
           stream.addTrack(destination.stream.getAudioTracks()[0]);
           return stream;
         };
+      })()`);
+    }
+    if (testVideoScaling) {
+      await guest.evaluate(`(() => {
         const setParameters = RTCRtpSender.prototype.setParameters;
         window.__videoEncodings = new Map();
         RTCRtpSender.prototype.setParameters = async function (parameters) {
@@ -405,7 +412,7 @@ try {
       console.error(await guest.evaluate('Array.from(document.querySelectorAll(".hint--warn")).map(b => b.textContent)'));
       throw error;
     }
-    if (i === 1 && !useRealCapture) {
+    if (testVideoScaling) {
       const smooth = await until(() => guest.evaluate('window.__videoEncoding?.scaleResolutionDownBy === 2 && window.__videoEncoding'), 'apply Smooth video encoding');
       await guest.evaluate('document.querySelector("[data-video-quality-preset=standard]").click()');
       const standard = await until(() => guest.evaluate('window.__videoEncoding?.maxBitrate === 1500000 && window.__videoEncoding'), 'apply SD video encoding');

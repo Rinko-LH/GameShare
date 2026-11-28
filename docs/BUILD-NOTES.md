@@ -34,7 +34,9 @@ node apps/tauri/tests/check-client.mjs .cache/tauri-target/x86_64-pc-windows-msv
 
 ## 运行已有便携包
 
-在仓库旁的 `../release` 下解压相应便携包，保留其中的程序和随附文件。`run.bat` 在该目录中查找名称匹配 `GameShare-Tauri*.exe`、父目录名匹配 `*-tauri-*-portable*` 的程序，并启动最近修改的一份。也可直接启动解压后的程序。Cloudflare 自动隧道需要校验通过的 `cloudflared.exe`，组件来源和配置见 [Tauri 客户端说明](../apps/tauri/README.md)。
+从发布页下载 Windows x64 便携 ZIP，完整解压后直接运行 `GameShare-Tauri` 开头的 EXE。使用 Cloudflare 临时邀请时，保留主程序旁随包提供的 `cloudflared.exe`。 [GitHub Releases](https://github.com/Rinko-LH/GameShare/releases)
+
+使用仓库的 `run.bat` 启动时，将便携包解压到仓库旁的 `../release` 目录。脚本会查找名称匹配 `GameShare-Tauri*.exe`、父目录名匹配 `*-tauri-*-portable*` 的程序，并启动最近修改的一份。组件校验和源码配置见 [Tauri 客户端说明](../apps/tauri/README.md)。
 
 开发时使用前文的本机编译命令。正式分发时再制作发布包，发布产物放在仓库旁的 `../release`。Tauri 的 NSIS 安装器选项在 [tauri.conf.json](../apps/tauri/src-tauri/tauri.conf.json) 中，包含 WebView2 引导安装配置。使用 Cloudflare 的便携分发目录应提供匹配版本的组件及其许可文件。
 
