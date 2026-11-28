@@ -219,9 +219,20 @@ try {
     guests.push(guest);
     await fill(guest.evaluate, legacy ? 'input[placeholder="朋友会看到的名字"]' : 'input[name=nickname]', `Guest ${i}`);
     await guest.evaluate('document.querySelector("input[name=connection-role][value=guest]").click()');
+    if (!legacy) {
+      assert.equal(await guest.evaluate('Boolean(document.querySelector(".connection-manual [data-join-address]"))'), true);
+      assert.equal(await guest.evaluate('Boolean(document.querySelector(".connection-manual [data-signaling]"))'), false);
+    }
+    const savedConfig = await guest.evaluate('localStorage.getItem("gs.connectionConfig")');
     await fill(guest.evaluate, '[data-invitation]', invitation);
-    await clickText(guest.evaluate, '连接并加入');
+    if (legacy) await clickText(guest.evaluate, '连接并加入');
+    else {
+      assert.equal(await guest.evaluate('Boolean(document.querySelector(".connection-network, .connection-manual"))'), false);
+      assert.equal(await guest.evaluate('localStorage.getItem("gs.connectionConfig")'), savedConfig);
+      await guest.evaluate('document.querySelector(".connection-submit").click()');
+    }
     await until(() => guest.evaluate(`document.querySelector('.roomcode__value')?.textContent.trim() === ${JSON.stringify(room)}`), `guest ${i} joined room`);
+    if (!legacy) assert.equal(await guest.evaluate('localStorage.getItem("gs.connectionConfig")'), savedConfig);
     const useRealCapture = i === 1 && captureTitle;
     if (i === 1 && !useRealCapture) {
       await guest.evaluate(`(() => {

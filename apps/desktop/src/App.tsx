@@ -21,7 +21,7 @@ import { ConnectionPanel } from './ConnectionPanel';
 import { ApplicationAudioPicker } from './ApplicationAudioPicker';
 import { VoicePanel, useVoiceHotkey } from './VoicePanel';
 import { readVoicePreferences } from './voice-settings';
-import { readConnectionConfig, saveConnectionConfig, type ConnectionConfig } from './connection-config';
+import { DEFAULT_CONNECTION_CONFIG, readConnectionConfig, saveConnectionConfig, type ConnectionConfig } from './connection-config';
 import { createInvitation, resolveInvitationConfig, parseInvitation } from './invitations';
 import { getLang, setLang, subscribeLang, t as lookup, fmt } from './i18n';
 import type { I18nKey } from './i18n';
@@ -123,10 +123,18 @@ export default function App() {
   const t = useI18n();
 
   const isTauri = window.gameShare?.runtime === 'tauri';
-  const [connectionConfig, setConnectionConfig] = useState<ConnectionConfig>(readConnectionConfig);
+  const [savedConnectionConfig, setSavedConnectionConfig] = useState<ConnectionConfig>(readConnectionConfig);
+  const [guestConnectionConfig, setGuestConnectionConfig] = useState(DEFAULT_CONNECTION_CONFIG);
   const [selectedMediaIp, setSelectedMediaIp] = useState('');
   const [pendingInvitation, setPendingInvitation] = useState('');
   const [connectionRole, setConnectionRole] = useState<'host' | 'guest'>('host');
+  const temporaryGuest = isTauri && connectionRole === 'guest';
+  const guestInvite = temporaryGuest ? parseInvitation(pendingInvitation) : null;
+  const connectionConfig = temporaryGuest
+    ? guestInvite?.server && guestInvite.room && !guestInvite.error
+      ? resolveInvitationConfig(guestInvite, guestConnectionConfig)
+      : guestConnectionConfig
+    : savedConnectionConfig;
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [creatingRoom, setCreatingRoom] = useState(false);
 
@@ -428,23 +436,34 @@ export default function App() {
     if (inRoom || busy || connection.state === 'connecting') return;
     session.disconnect();
     session.configureMediaIp(null);
+    if (config.mediaPolicy !== connectionConfig.mediaPolicy) setSelectedMediaIp('');
+    setConnectionError(null);
+    setServerUrl(DEFAULT_SIGNALING_URL);
+    if (temporaryGuest) {
+      setGuestConnectionConfig(config);
+      return;
+    }
     if (config.signaling !== connectionConfig.signaling) {
       setSelectedInviteAddress(null);
       if (config.signaling !== 'cloudflare' && tunnel?.enabled) void handleToggleTunnel(false);
     }
-    if (config.mediaPolicy !== connectionConfig.mediaPolicy) setSelectedMediaIp('');
-    setConnectionConfig(config);
+    setSavedConnectionConfig(config);
     saveConnectionConfig(config);
-    setConnectionError(null);
-    setServerUrl(DEFAULT_SIGNALING_URL);
   };
 
   const readInvitationSelection = (text: string) => {
     setPendingInvitation(text);
     setConnectionError(null);
     const invite = parseInvitation(text);
+    if (temporaryGuest) {
+      const config = invite?.server && invite.room && !invite.error
+        ? resolveInvitationConfig(invite, guestConnectionConfig)
+        : guestConnectionConfig;
+      if (config.mediaPolicy !== connectionConfig.mediaPolicy) setSelectedMediaIp('');
+      return;
+    }
     if (!invite || invite.error || !invite.server || !invite.room) return;
-    const config = resolveInvitationConfig(invite, connectionConfig);
+    const config = resolveInvitationConfig(invite, savedConnectionConfig);
     if (config.signaling !== connectionConfig.signaling || config.mediaPolicy !== connectionConfig.mediaPolicy) changeConnectionConfig(config);
   };
 
@@ -452,7 +471,7 @@ export default function App() {
     if (!isTauri || inRoom || busy || connection.state === 'connecting' || connectionConfig.mediaPolicy !== 'selected-ip-experimental') return;
     const addresses = embeddedServer?.mediaAddresses;
     if (!addresses) return;
-    setSelectedMediaIp(current => addresses.some(item => item.address === current) ? current : addresses[0]?.address ?? '');
+    setSelectedMediaIp(current => addresses.some(item => item.address === current) ? current : '');
   }, [isTauri, inRoom, busy, connection.state, connectionConfig.mediaPolicy, embeddedServer]);
 
   useEffect(() => {
@@ -591,12 +610,14 @@ export default function App() {
     const invite = parseInvitation(text);
     if (invite?.error) throw new Error(invite.error);
     if (!invite?.server || !invite.room) throw new Error('未识别到完整邀请，请粘贴整段 GS3 / GS1 / GS2 邀请。');
-    const config = resolveInvitationConfig(invite, connectionConfig);
+    const config = resolveInvitationConfig(invite, isTauri ? guestConnectionConfig : savedConnectionConfig);
     const target = normalizeSignalingAddress(invite.server);
     setPendingInvitation(text);
     setConnectionRole('guest');
-    setConnectionConfig(config);
-    saveConnectionConfig(config);
+    if (!isTauri) {
+      setSavedConnectionConfig(config);
+      saveConnectionConfig(config);
+    }
     setServerUrl(target);
     setConnectionError(null);
     if (!invite.config && !invite.mode && !invite.mediaPolicy) session.pushLog('旧邀请未携带连接策略，将沿用当前配置，请确认与房主一致。');
@@ -608,7 +629,7 @@ export default function App() {
     session.configureMediaIp(selected ? selectedMediaIp : null);
     await session.connectAndWait(target, config.mediaPolicy !== 'internet-auto');
     await session.joinRoom(invite.room, nickname);
-  }, [inRoom, connectionConfig, session, nickname, selectedMediaIp]);
+  }, [inRoom, isTauri, guestConnectionConfig, savedConnectionConfig, session, nickname, selectedMediaIp]);
 
   /* ---------------- 链路统计轮询 ---------------- */
 

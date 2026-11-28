@@ -84,6 +84,7 @@
 .connection-config-form .ip-connect__field > span { color: var(--text-dim); }
 .connection-config-form .field__input { min-height: 34px; }
 .connection-config-form textarea { resize: vertical; min-height: 58px; }
+.app--tauri .connection-config-form [data-invitation] { height: 147px; }
 .connection-network {
   display: grid;
   gap: 10px;
