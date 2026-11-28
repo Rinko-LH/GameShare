@@ -1,37 +1,40 @@
-# GameShare Tauri Windows 客户端
+# GameShare Tauri 客户端
 
-复用 GameShare 的 React 界面、邀请格式和 WebRTC 会话。Tauri 创建独立置顶窗口并运行兼容现有 Socket.IO 房间协议的 Rust 信令服务。小窗用本机 WebRTC 接收器显示远端视频，声音由主窗口播放。
+这是 GameShare 的主客户端。界面和 WebRTC 会话位于 [apps/desktop/src](../desktop/src/App.tsx)，由 Tauri 和 WebView2 运行。Rust 后端提供本机信令、Windows 原生浮窗、应用音频、全局按住说话及 Cloudflare 临时隧道。
 
-## 构建和验证
+在仓库根目录安装依赖后运行 `npm run dev:desktop`。环境配置、编译输出和常见问题见[构建与测试指南](../../docs/BUILD-NOTES.md)。
 
-需要 Windows x64、Node.js 22.12 或更新版本、Rust MSVC、Windows SDK 和 WebView2 Evergreen。在仓库根目录运行：
+## 采集与观看
+
+使用 WebView2 的共享面板选择窗口或屏幕。窗口共享会尝试自动采集窗口所在应用的声音。自动采集失败时画面继续发送，也可在共享期间通过「选择音频应用」手动指定要传输的应用。画面、麦克风语音与应用音频分别走独立轨道。
+
+按应用采音依赖 Windows 的进程回环 API。有此需求时建议使用 Windows 11。参见 [Microsoft 的 API 要求](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ns-audioclientactivationparams-audioclient_process_loopback_params)。
+
+观看者可使用放大布局、网格、全屏或独立浮窗。同伴的语音与共享声音可以分别调整音量。暂停接收一位同伴的共享会同时暂停该路画面和共享声音，语音继续播放。浮窗的本机链路和房间媒体链路见[架构说明](../../docs/ARCHITECTURE.md)。
+
+Tauri 和 Electron 的本机应用数据各自保存。连接旧客户端时，先核对邀请格式和实际需要的功能，见[连接选项](../../docs/CONNECTION-OPTIONS.md)。
+
+## Cloudflare 临时网址
+
+使用 `cloudflared` 官方 [2026.11.2 Windows x64 版本](https://github.com/cloudflare/cloudflared/releases/tag/2026.11.2)。从 Assets 取 `cloudflared-windows-amd64.exe`，改名为 `cloudflared.exe`。开发时可放在仓库根目录的 `tools/` 下，由开发入口定位，也可用 `GAMESHARE_CLOUDFLARED` 指向该文件。直接启动测试 EXE 时，可将组件放在程序旁，或在启动环境中设置同一个变量。
+
+客户端会校验组件的大小和 SHA-256，再启动本地副本。建房时选择「Cloudflare」，等临时入口就绪后复制邀请。重开隧道后使用新邀请。结束时可以在离房后关闭临时网址，或者退出客户端。
+
+## 集成测试
+
+用 Node.js 24 在仓库根目录运行，确认测试可占用本机信令端口 `8080`，且系统有可用的非回环网络接口。
 
 ```powershell
-npm ci
-npm run dev:desktop
 npm run build:desktop
-```
-
-`dev:desktop` 通过本机 Vite 服务热更新界面。`build:desktop` 默认将测试 EXE 编译到仓库根目录的 `.cache/tauri-target/x86_64-pc-windows-msvc/release/gameshare-tauri.exe`。
-
-用 Node.js 24 运行集成测试：
-
-```powershell
 node apps/tauri/tests/check-client.mjs .cache/tauri-target/x86_64-pc-windows-msvc/release/gameshare-tauri.exe
 ```
 
-测试使用独立用户目录，创建房间、用邀请加入、发送三路测试源，并检查浮窗身份、静音、最小化期间播放和窗口清理。可追加 `--cloudflare` 改用短时公网测试入口，验证创建临时网址、复制邀请、从公网入房和关闭隧道。可用 `--electron=<旧版 GameShare.exe 的路径>` 将第三个发送者换成 Electron。追加 `--window-capture` 可将第一路替换为实际窗口采集。此模式需要在 WebView2 共享面板中手动选中终端提示的测试窗口。
+脚本使用独立 WebView2 配置，创建房间、用邀请加入、发送三路测试源，并检查布局、画质、语音与接收暂停、浮窗身份、主窗最小化期间的播放及窗口清理。可在 EXE 路径之后追加测试选项。
 
-## Cloudflare 自动隧道
-
-选择「Cloudflare 自动隧道」并创建房间。免安装 ZIP 随附 Cloudflare 官方 Windows x64 版 `cloudflared.exe`，与 GameShare 主程序放在同一目录。开启时会校验组件的 SHA-256，再启动本地副本。构建产物用于开发时，可以把同版本组件放到测试 EXE 旁边，或用 `GAMESHARE_CLOUDFLARED` 指定该文件。
-
-信令通过临时入口连通后可复制邀请。房间用完后，离房再选择「关闭临时邀请网址」，也可以退出客户端。隧道仅用于房间信令。
-
-## 当前范围
-
-- 通过 Cloudflare 临时入口、IP 或自备入口创建房间，并可加入现有服务上的房间。使用浏览器共享面板选择屏幕或窗口，接收并独立显示队友画面。
-- 麦克风和 Windows 全局按住说话沿用现有界面。窗口共享默认自动接入对应应用的声音，可在选窗口前关闭。自动采音失败时继续共享画面，可以点「选择音频应用」手动指定。需要整屏系统声音时，先勾选「共享整屏时，可选电脑声音」，再在选源面板开启系统音频。外部游戏窗口无边框化仍走 Electron。
-- 共享画面默认使用放大布局，可切换到网格、全屏或独立浮窗。主窗口和浮窗均可调整画面透明度，也可暂停接收指定成员的视频和共享声音，保留语音。成员的语音和共享声音可独立静音，仅影响本机播放。
-- 签发 TURN 凭据、浮窗位置持久化和浮窗全局切换键尚未迁移。来自既有信令服务器的邀请及 TURN 配置继续由原 WebRTC 会话处理。
-- Electron 和 Tauri 使用独立的应用数据目录，首次打开 Tauri 时需重新设置客户端偏好。
+| 选项 | 用途 |
+| --- | --- |
+| `--window-capture` | 用真实窗口替代第一路测试源。按终端提示在 WebView2 共享面板中手动选择测试窗口。 |
+| `--cloudflare` | 临时创建公网入口，验证邀请、入房和关闭隧道。需要匹配的 `cloudflared.exe`。 |
+| `"--electron=<旧版 GameShare.exe 的路径>"` | 用 Electron 替代第三个发送者验证旧客户端互通。 |
+| `--screenshots` | 将测试画面写入 `.cache/tauri-client-check/` 下本次测试的目录。 |
+| `--dev` | 验证已编译的开发版 EXE。运行前保持端口 `1420` 上的 Vite 开发服务运行。 |
