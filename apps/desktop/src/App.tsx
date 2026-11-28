@@ -941,6 +941,14 @@ export default function App() {
     if (isTauri) setViewerFocus(activeViewerFocus);
   }, [activeViewerFocus, isTauri]);
 
+  useEffect(() => {
+    if (!isTauri || !inRoom || !connected) return;
+    const thumbnails = viewerLayout === 'focus' && !isFloat && activeViewerFocus
+      ? remotePeers.filter(({ peerId }) => peerId !== activeViewerFocus && remoteSharing[peerId]).map(({ peerId }) => peerId)
+      : [];
+    session.setViewThumbnails(thumbnails);
+  }, [activeViewerFocus, connected, inRoom, isFloat, isTauri, remotePeers, remoteSharing, session, viewerLayout]);
+
   /* ---------------- 放大 ---------------- */
 
   /**

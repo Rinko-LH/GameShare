@@ -24,6 +24,8 @@ import {
   type ShareStatePayload,
   type ShareStoppedPayload,
   type SignalEnvelope,
+  type ViewQualityMode,
+  type ViewQualityPayload,
   type WebRtcAnswerPayload,
   type WebRtcOfferPayload,
 } from '@game-share/protocol';
@@ -81,6 +83,7 @@ export interface SignalingEvents {
   iceCandidate: (fromPeerId: string, payload: IceCandidatePayload) => void;
   qualityRequest: (fromPeerId: string, payload: QualityRequestPayload) => void;
   qualityChanged: (fromPeerId: string, payload: QualityChangedPayload) => void;
+  viewQuality: (fromPeerId: string, payload: ViewQualityPayload) => void;
 }
 
 export class SignalingError extends Error {
@@ -204,6 +207,9 @@ export class SignalingClient {
     );
     socket.on(ServerEvent.QualityChanged, (env: SignalEnvelope<QualityChangedPayload>) =>
       this.#emit('qualityChanged', env.fromPeerId, env.payload),
+    );
+    socket.on(ServerEvent.ViewQuality, (env: SignalEnvelope<ViewQualityPayload>) =>
+      this.#emit('viewQuality', env.fromPeerId, env.payload),
     );
   }
 
@@ -342,6 +348,11 @@ export class SignalingClient {
   requestQuality(targetPeerId: string, level: QualityLevel): void {
     const payload: QualityRequestPayload = { targetPeerId, level };
     this.#emitToRoom(ClientEvent.QualityRequest, payload);
+  }
+
+  requestViewQuality(targetPeerId: string, mode: ViewQualityMode, revision: number): void {
+    const payload: ViewQualityPayload = { targetPeerId, mode, revision };
+    this.#emitToRoom(ClientEvent.ViewQuality, payload);
   }
 
   /** sender 回执，告知观看方实际生效的档位 */

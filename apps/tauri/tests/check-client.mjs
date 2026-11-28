@@ -365,10 +365,14 @@ try {
           return captureStream.apply(this, args);
         };
         const setParameters = RTCRtpSender.prototype.setParameters;
+        window.__videoEncodings = new Map();
         RTCRtpSender.prototype.setParameters = async function (parameters) {
           await setParameters.call(this, parameters);
           const encoding = parameters.encodings[0];
-          if (this.track?.kind === 'video' && encoding) window.__videoEncoding = encoding;
+          if (this.track?.kind === 'video' && encoding) {
+            window.__videoEncoding = encoding;
+            window.__videoEncodings.set(this, encoding);
+          }
         };
       })()`);
       await guest.evaluate('document.querySelector("[data-video-quality-preset=smooth]").click()');
@@ -438,6 +442,15 @@ try {
   const fullscreenControl = control('fullscreen');
   await until(async () => await decodedShares(hostEval) === 3, 'all three shares decoded in the main viewer');
   assert.equal(await selectedPeer(hostEval), firstPeerId, 'New shares must preserve current focus');
+  const firstSender = guests[0].evaluate;
+  const firstSenderHasThumbnailLinks = (count) => firstSender(`(() => {
+    const encodings = [...window.__videoEncodings.values()];
+    const thumbnails = encodings.filter(encoding => encoding.maxBitrate === 200000 &&
+      encoding.maxFramerate === 10 && encoding.scaleResolutionDownBy === 4);
+    const normal = encodings.filter(encoding => encoding.maxBitrate === 4000000 && encoding.scaleResolutionDownBy === 1);
+    return encodings.length === 3 && thumbnails.length === ${count} && normal.length === ${3 - count};
+  })()`);
+  if (!captureTitle) await until(() => firstSenderHasThumbnailLinks(0), 'viewers see the first sender at normal quality');
   await click(hostEval, control('layout-grid'));
   assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'grid');
   await until(async () => await decodedShares(hostEval) === 3, 'grid displays all live shares');
@@ -446,6 +459,13 @@ try {
   assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'focus');
   assert.equal(await selectedPeer(hostEval), secondPeerId);
   await until(async () => await decodedShares(hostEval) === 3, 'focus layout keeps all live shares accessible');
+  if (!captureTitle) {
+    await until(() => firstSenderHasThumbnailLinks(1), 'only the viewer using a thumbnail receives the lower limits');
+    await click(hostEval, control('layout-grid'));
+    await until(() => firstSenderHasThumbnailLinks(0), 'grid restores the previous thumbnail to sender quality');
+    await click(hostEval, control('layout-focus'));
+    await until(() => firstSenderHasThumbnailLinks(1), 'returning to focus reapplies the thumbnail limits');
+  }
   await screenshot(hostEval, 'viewer-focus');
   await until(async () => await audioMuted(hostEval, secondPeerId, 'share') === false, 'shared audio is playing alongside voice');
 
@@ -505,6 +525,7 @@ try {
     })`));
     throw error;
   }
+  if (!captureTitle) await until(() => firstSenderHasThumbnailLinks(1), 'fullscreen focus keeps the thumbnail limits');
   await screenshot(hostEval, 'viewer-fullscreen');
   await clickScreenPoint(hostEval, fullscreenControl);
   await until(() => hostEval(`document.fullscreenElement === null &&
@@ -522,6 +543,7 @@ try {
     return Promise.all(windows.map(attach));
   };
   let tiles = await openFloats();
+  if (!captureTitle) await until(() => firstSenderHasThumbnailLinks(0), 'independent floats restore sender quality');
   const sample = (tile) => tile(`(() => {
     const video = document.querySelector('video');
     return { frames: video?.getVideoPlaybackQuality().totalVideoFrames ?? 0,

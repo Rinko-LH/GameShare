@@ -161,6 +161,8 @@ export interface PeerLinkOptions {
   log?: (line: string) => void;
 }
 
+const VIEW_THUMBNAIL_LIMIT = { width: 320, height: 180, maxFramerate: 10, maxBitrate: 200_000 };
+
 /** 方向修复的最大尝试次数，防止浏览器行为异常时来回协商打转 */
 const MAX_DIRECTION_REPAIRS = 3;
 
@@ -275,6 +277,7 @@ export class PeerLink {
   #remoteTracks: RemoteTracks = emptyRemoteTracks();
   #remoteStream: MediaStream | null = null;
   #desiredQuality: QualityLevel = DEFAULT_QUALITY;
+  #viewerThumbnailLimit = false;
   /** 用户选择的共享帧率（30/60/120）；null = 未选择，按档位默认走 */
   #userFps: number | null = null;
   #videoBitrateLimit: number | null = null;
@@ -1226,6 +1229,12 @@ export class PeerLink {
     await this.#applyQuality();
   }
 
+  async setViewerThumbnailLimit(enabled: boolean): Promise<void> {
+    if (this.#viewerThumbnailLimit === enabled) return;
+    this.#viewerThumbnailLimit = enabled;
+    await this.#applyQuality();
+  }
+
   /**
    * 用户改了共享帧率（30/60/120）。所有链路共用一个采集源，
    * 所以帧率是全局偏好，每条链路的编码上限同步更新。
@@ -1269,11 +1278,20 @@ export class PeerLink {
     const profile = getProfile(this.#desiredQuality);
     const sourceWidth = this.#getSourceWidth() ?? sender.track?.getSettings().width ?? null;
     const sourceHeight = this.#getSourceHeight() ?? sender.track?.getSettings().height ?? null;
-    const scaleDown = computeScaleResolutionDownBy(sourceHeight, profile.targetHeight);
+    const qualityScale = computeScaleResolutionDownBy(sourceHeight, profile.targetHeight);
     const userFps = this.#userFps ?? profile.maxFramerate;
-    const maxFramerate = this.#videoResolution === null ? computeMaxFramerate(profile, userFps) : userFps;
+    const qualityFramerate = this.#videoResolution === null ? computeMaxFramerate(profile, userFps) : userFps;
     const automaticBitrate = computeMaxBitrate(profile, sourceWidth, sourceHeight, userFps);
-    const maxBitrate = this.#videoBitrateLimit === null ? automaticBitrate : Math.min(automaticBitrate, this.#videoBitrateLimit);
+    const qualityBitrate = this.#videoBitrateLimit === null ? automaticBitrate : Math.min(automaticBitrate, this.#videoBitrateLimit);
+    const scaleDown = this.#viewerThumbnailLimit ? Math.max(
+      qualityScale,
+      computeScaleResolutionDownBy(sourceWidth, VIEW_THUMBNAIL_LIMIT.width),
+      computeScaleResolutionDownBy(sourceHeight, VIEW_THUMBNAIL_LIMIT.height),
+    ) : qualityScale;
+    const maxFramerate = this.#viewerThumbnailLimit ? Math.min(qualityFramerate, VIEW_THUMBNAIL_LIMIT.maxFramerate) : qualityFramerate;
+    const maxBitrate = this.#viewerThumbnailLimit ? Math.min(qualityBitrate, VIEW_THUMBNAIL_LIMIT.maxBitrate) : qualityBitrate;
+    const qualityLabel = this.#viewerThumbnailLimit ? '观看者缩略图' :
+      this.#videoResolution === null ? profile.label : `${this.#videoResolution}p（上限，帧率优先）`;
 
     try {
       const params = sender.getParameters();
@@ -1292,7 +1310,7 @@ export class PeerLink {
       this.#appliedSourceWidth = sourceWidth;
       this.#appliedSourceHeight = sourceHeight;
       this.#log(
-        `画质 ${this.remotePeerId} → ${this.#videoResolution === null ? profile.label : `${this.#videoResolution}p（上限，帧率优先）`}（scaleDown=${scaleDown.toFixed(3)}，` +
+        `画质 ${this.remotePeerId} → ${qualityLabel}（scaleDown=${scaleDown.toFixed(3)}，` +
           `base=${sourceHeight ?? 'unknown'}p，fps≤${maxFramerate}，cap=${Math.round(maxBitrate / 1000)}k）`,
       );
     } catch (err) {

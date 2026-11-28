@@ -247,6 +247,12 @@ impl Rooms {
             "ice-candidate" => payload["candidate"]
                 .as_str()
                 .is_some_and(|candidate| candidate.len() <= 4096),
+            "view-quality" => {
+                matches!(payload["mode"].as_str(), Some("thumbnail" | "default"))
+                    && payload["revision"]
+                        .as_u64()
+                        .is_some_and(|revision| (1..=9_007_199_254_740_991).contains(&revision))
+            }
             _ => payload["level"]
                 .as_str()
                 .is_some_and(|quality| QUALITIES.contains(&quality)),
@@ -319,6 +325,7 @@ fn connect(socket: SocketRef, rooms: Arc<Mutex<Rooms>>) {
         "ice-candidate",
         "quality-request",
         "quality-changed",
+        "view-quality",
     ] {
         let rooms = rooms.clone();
         socket.on(

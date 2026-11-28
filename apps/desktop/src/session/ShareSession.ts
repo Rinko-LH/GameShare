@@ -2,12 +2,14 @@ import { normalizeVideoBitrateLimit } from '../video-bitrate';
 import { readVoicePreferences, type VoiceMode } from '../voice-settings';
 import { DEFAULT_VIDEO_RESOLUTION, normalizeVideoResolution, qualityForResolution, type VideoResolution } from '../video-resolution';
 import {
+  isViewQualityPayload,
   ProtocolErrorCode,
   type PeerInfo,
   type RoomJoinedPayload,
   type QualityLevel,
   type TrackRole,
   type TurnRelayPayload,
+  type ViewQualityPayload,
 } from '@game-share/protocol';
 import { DEFAULT_SIGNALING_URL, normalizeSignalingAddress, buildIceServers, mergeWithTransportError, type IceServerConfig, type ServerReachability } from '@game-share/shared';
 
@@ -222,6 +224,9 @@ export class ShareSession {
   #micRequest = 0;
   #voiceHeld = { button: false, keyboard: false };
   #incomingSharePauses: ReadonlyMap<string, ShareReceptionPause> = new Map();
+  #requestedViewThumbnails = new Set<string>();
+  #viewQualityRevision = 0;
+  #viewerQualityRequests = new Map<string, ViewQualityPayload>();
   #listeners = new Set<() => void>();
   #unsubscribe: Array<() => void> = [];
   #serverUrl = DEFAULT_SIGNALING_URL;
@@ -390,6 +395,12 @@ export class ShareSession {
       // 观看者请求把「我 → 他」这一路提档。只动这一条链路，其他观看者不受影响。
       this.signaling.on('qualityRequest', (fromPeerId, payload) => {
         this.setQualityFor(fromPeerId, payload.level);
+      }),
+      this.signaling.on('viewQuality', (fromPeerId, payload) => {
+        if (window.gameShare?.runtime !== 'tauri' || !this.#isMember(fromPeerId) || !isViewQualityPayload(payload)) return;
+        if (payload.revision <= (this.#viewerQualityRequests.get(fromPeerId)?.revision ?? 0)) return;
+        this.#viewerQualityRequests.set(fromPeerId, payload);
+        void this.#mesh?.getLink(fromPeerId)?.setViewerThumbnailLimit(payload.mode === 'thumbnail');
       }),
     ];
   }
@@ -679,6 +690,9 @@ export class ShareSession {
 
     this.#mesh.syncPeers([room.self.peerId, ...room.peers.map((p) => p.peerId)]);
     this.setIncomingSharePauses(this.#incomingSharePauses);
+    for (const [peerId, { mode }] of this.#viewerQualityRequests) {
+      void this.#mesh.getLink(peerId)?.setViewerThumbnailLimit(mode === 'thumbnail');
+    }
 
     // 诊断轮询跟着 Mesh 走：Mesh 重建时旧定时器必须掐掉，否则会出现两个轮询
     // 同时往同一个 state 写 —— 表现为诊断偶尔"跳"回去。
@@ -801,6 +815,8 @@ export class ShareSession {
   }
 
   #prunePeer(peerId: string): void {
+    this.#requestedViewThumbnails.delete(peerId);
+    this.#viewerQualityRequests.delete(peerId);
     const links = { ...this.#state.links };
     const remoteStreams = { ...this.#state.remoteStreams };
     const remoteTracks = { ...this.#state.remoteTracks };
@@ -813,6 +829,8 @@ export class ShareSession {
   }
 
   #teardownMesh(): void {
+    this.#requestedViewThumbnails.clear();
+    this.#viewerQualityRequests.clear();
     // 轮询必须在 Mesh 置空**之前**停：否则那一秒里定时器醒来，
     // `this.#mesh` 已是 null，`getDiagnoses()` 拿不到东西，会把诊断刷成默认值。
     this.#stopDiagnosisPolling();
@@ -1091,6 +1109,23 @@ export class ShareSession {
   /** 作为观看者，向某位发送方请求画质 */
   requestQualityFrom(peerId: string, level: QualityLevel): void {
     this.signaling.requestQuality(peerId, level);
+  }
+
+  setViewThumbnails(peerIds: readonly string[]): void {
+    if (!this.#state.room || !this.signaling.connected || this.#roomRecovery || this.#leavingRoom) return;
+
+    const thumbnails = new Set(peerIds);
+    for (const peerId of thumbnails) {
+      if (!this.#requestedViewThumbnails.has(peerId)) {
+        this.signaling.requestViewQuality(peerId, 'thumbnail', ++this.#viewQualityRevision);
+      }
+    }
+    for (const peerId of this.#requestedViewThumbnails) {
+      if (!thumbnails.has(peerId) && this.#isMember(peerId)) {
+        this.signaling.requestViewQuality(peerId, 'default', ++this.#viewQualityRevision);
+      }
+    }
+    this.#requestedViewThumbnails = thumbnails;
   }
 
   /** Apply the sender's resolution to every outgoing viewer link. */

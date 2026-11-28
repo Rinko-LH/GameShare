@@ -17,6 +17,7 @@ export const ClientEvent = {
   ShareStopped: 'share-stopped',
   QualityRequest: 'quality-request',
   QualityChanged: 'quality-changed',
+  ViewQuality: 'view-quality',
   Heartbeat: 'heartbeat',
 } as const;
 
@@ -34,6 +35,7 @@ export const ServerEvent = {
   ShareStopped: 'share-stopped',
   QualityRequest: 'quality-request',
   QualityChanged: 'quality-changed',
+  ViewQuality: 'view-quality',
   HeartbeatAck: 'heartbeat-ack',
   /**
    * 协议级错误（房间不存在、目标不在房间等）。
@@ -227,6 +229,23 @@ export interface QualityRequestPayload {
   /** 被观看的发送方 */
   targetPeerId: string;
   level: QualityLevel;
+}
+
+export type ViewQualityMode = 'thumbnail' | 'default';
+
+export interface ViewQualityPayload {
+  targetPeerId: string;
+  mode: ViewQualityMode;
+  /** Newer layout changes supersede earlier requests from the same viewer. */
+  revision: number;
+}
+
+export function isViewQualityPayload(value: unknown): value is ViewQualityPayload {
+  if (!value || typeof value !== 'object') return false;
+  const { targetPeerId, mode, revision } = value as Partial<ViewQualityPayload>;
+  return typeof targetPeerId === 'string' && targetPeerId.length > 0 &&
+    (mode === 'thumbnail' || mode === 'default') &&
+    typeof revision === 'number' && Number.isSafeInteger(revision) && revision > 0;
 }
 
 /**

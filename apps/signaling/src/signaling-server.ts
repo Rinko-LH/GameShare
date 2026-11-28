@@ -6,6 +6,7 @@ import {
   ProtocolErrorCode,
   ServerEvent,
   isQualityLevel,
+  isViewQualityPayload,
   type AckResponse,
   type CreateRoomPayload,
   type ErrorPayload,
@@ -26,6 +27,7 @@ import {
   type ShareStoppedPayload,
   type SignalEnvelope,
   type TurnRelayPayload,
+  type ViewQualityPayload,
   type WebRtcAnswerPayload,
   type WebRtcOfferPayload,
 } from '@game-share/protocol';
@@ -390,6 +392,12 @@ export function createSignalingServer(options: SignalingServerOptions): Signalin
         isQualityLevel(p?.level) ? null : 'level 不是合法画质档位',
       );
       log.debug(`quality-changed ${socket.id} -> ${payload?.targetPeerId} level=${payload?.level}`);
+    });
+
+    socket.on(ClientEvent.ViewQuality, (payload: ViewQualityPayload) => {
+      relayDirected(socket, ServerEvent.ViewQuality, payload, (p) =>
+        isViewQualityPayload(p) ? null : '观看画质请求的模式或序号无效',
+      );
     });
 
     socket.on(ClientEvent.Heartbeat, (payload: HeartbeatPayload, ack?: SocketAck<HeartbeatAckPayload>) => {
