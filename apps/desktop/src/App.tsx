@@ -24,6 +24,7 @@ import { ShareViewer, type ShareViewerParticipant } from './ShareViewer';
 import { SpeakingMark } from './SpeakingPlayers';
 import { VoicePanel, useVoiceHotkey } from './VoicePanel';
 import { readVoicePreferences } from './voice-settings';
+import { readNicknamePreference } from './nickname-preference';
 import { DEFAULT_CONNECTION_CONFIG, readConnectionConfig, saveConnectionConfig, type ConnectionConfig } from './connection-config';
 import { createInvitation, resolveInvitationConfig, parseInvitation } from './invitations';
 import { getLang, setLang, useI18n, fmt, type I18nKey } from './i18n';
@@ -138,7 +139,7 @@ export default function App() {
 
   const [serverUrl, setServerUrl] = useState(DEFAULT_SIGNALING_URL);
   const [selectedInviteAddress, setSelectedInviteAddress] = useState<string | null>(null);
-  const [nickname, setNickname] = useState('');
+  const [nickname, setNickname] = useState(readNicknamePreference);
   const [busy, setBusy] = useState(false);
 
   const [sources, setSources] = useState<CaptureSourceInfo[]>([]);

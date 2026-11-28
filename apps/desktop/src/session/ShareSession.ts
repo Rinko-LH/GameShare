@@ -1,5 +1,6 @@
 import { normalizeVideoBitrateLimit } from '../video-bitrate';
 import { readVoicePreferences, type VoiceMode } from '../voice-settings';
+import { saveNicknamePreference } from '../nickname-preference';
 import { DEFAULT_VIDEO_RESOLUTION, normalizeVideoResolution, qualityForResolution, type VideoResolution } from '../video-resolution';
 import {
   isViewQualityPayload,
@@ -162,7 +163,7 @@ export interface StartShareOptions {
   fps?: number;
   /** 合成源那路声音的频率（Hz），默认 440。验收要按角色灌不同频率时用 */
   toneHz?: number;
-  /** 合成音的幅度（0~1），默认 0.002 */
+  /** 自动化验收用的合成音幅度（0~1）。只有显式设置为正值才添加音轨 */
   toneGain?: number;
   /**
    * 真实采集时是否带系统声音，默认 true。
@@ -505,6 +506,7 @@ export class ShareSession {
   async createRoom(nickname: string, allowIpJoin = false): Promise<{ roomCode: string; self: PeerInfo; peers: PeerInfo[] }> {
     const data = await this.signaling.createRoom(nickname, allowIpJoin);
     this.#enterRoom(data.roomCode, data.self, data.peers, data.turn);
+    saveNicknamePreference(nickname);
     this.pushLog(`房间已创建：${data.roomCode}`);
     this.#logTurnRelay(data.turn);
     return data;
@@ -517,6 +519,7 @@ export class ShareSession {
   ): Promise<{ roomCode: string; self: PeerInfo; peers: PeerInfo[] }> {
     const data = await this.signaling.joinRoom(roomCode, nickname, joinByIp);
     this.#enterRoom(data.roomCode, data.self, data.peers, data.turn);
+    saveNicknamePreference(nickname);
     this.pushLog(`已加入房间：${data.roomCode}，当前 ${data.peers.length + 1} 人`);
     this.#logTurnRelay(data.turn);
     return data;

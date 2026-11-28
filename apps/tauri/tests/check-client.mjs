@@ -366,11 +366,21 @@ try {
         // The built-in test pattern is 360p. Use a larger canvas to exercise downscaling.
         const captureStream = HTMLCanvasElement.prototype.captureStream;
         HTMLCanvasElement.prototype.captureStream = function (...args) {
-          if (this.width === 640 && this.height === 360) {
-            this.width = 1280;
-            this.height = 720;
-          }
-          return captureStream.apply(this, args);
+          if (this.width !== 640 || this.height !== 360) return captureStream.apply(this, args);
+          this.width = 1280;
+          this.height = 720;
+          const stream = captureStream.apply(this, args);
+          // Supply an audio fixture for the shared-audio control checks.
+          const context = new AudioContext();
+          const tone = context.createOscillator();
+          const gain = context.createGain();
+          const destination = context.createMediaStreamDestination();
+          gain.gain.value = 0.002;
+          tone.connect(gain).connect(destination);
+          tone.start();
+          void context.resume();
+          stream.addTrack(destination.stream.getAudioTracks()[0]);
+          return stream;
         };
         const setParameters = RTCRtpSender.prototype.setParameters;
         window.__videoEncodings = new Map();

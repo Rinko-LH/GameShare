@@ -257,7 +257,7 @@ const ZH = {
   'share.audioApplication.refresh': '刷新',
   'share.enumerate': '枚举窗口 / 屏幕',
   'share.testSource': '测试源',
-  'share.testSourceTitle': '播放测试画面和测试音，用于检查共享效果，无需采集真实屏幕',
+  'share.testSourceTitle': '共享静音的测试画面，用于检查共享效果',
 
   /* 音频失败告警 */
   'audioFail.title': '无法捕获此应用声音。',
@@ -586,7 +586,7 @@ const EN: Dict = {
   'share.audioApplication.refresh': 'Refresh',
   'share.enumerate': 'Enumerate windows / screens',
   'share.testSource': 'Test source',
-  'share.testSourceTitle': 'Use a synthetic animated source instead of real capture, for automated checks',
+  'share.testSourceTitle': 'Share a silent animated test pattern to check video sharing',
 
   'audioFail.title': 'Cannot capture this app\'s audio.',
   'audioFail.toSystem': 'Switch to whole-PC audio',

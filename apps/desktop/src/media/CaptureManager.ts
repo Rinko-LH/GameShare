@@ -49,10 +49,7 @@ export interface TestPatternOptions {
    */
   toneHz?: number;
   /**
-   * 合成音的幅度（0~1），默认 0.002。
-   *
-   * 默认值刻意压得很低（长时间自动化跑起来不至于吵人）；只有需要做频谱断言时
-   * 才调高。**不能设 0**：全零会被编码器当静音优化掉，对端就算收到轨道也没有数据。
+   * 自动化验收用的合成音幅度（0~1）。只有显式设置为正值才添加音轨。
    */
   toneGain?: number;
 }
@@ -489,7 +486,8 @@ export class CaptureManager {
     const stream = canvas.captureStream(fps);
     this.#canvas = canvas;
     this.#timer = timer;
-    this.#startTestTone(stream, options.toneHz ?? 440, options.toneGain ?? 0.002);
+    const toneGain = options.toneGain ?? 0;
+    if (toneGain > 0) this.#startTestTone(stream, options.toneHz ?? 440, toneGain);
     this.#adopt(stream, `测试源 ${label}（${width}x${height}@${fps}）`);
     return stream;
   }
