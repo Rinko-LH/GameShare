@@ -1,18 +1,45 @@
 import { listenNative, native } from './tauri-native';
-import type { FloatTilesStatus, FloatWindowStatus, GameShareApi } from './types/global';
+import type { FloatTilePeer, FloatTilesStatus, FloatWindowStatus, GameShareApi } from './types/global';
 
-type Peer = { peerId: string; name: string; muted?: boolean; volume?: number };
+const FLOAT_OPACITY_KEY = 'gs.tauri.floatOpacity';
+export const MIN_FLOAT_OPACITY = 0.25;
+
+function normalizeFloatOpacity(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(MIN_FLOAT_OPACITY, value)) : 1;
+}
+
+export function readFloatOpacity(): number {
+  return normalizeFloatOpacity(Number(window.localStorage.getItem(FLOAT_OPACITY_KEY) ?? 1));
+}
+
+export function writeFloatOpacity(value: number): number {
+  const opacity = normalizeFloatOpacity(value);
+  window.localStorage.setItem(FLOAT_OPACITY_KEY, String(opacity));
+  return opacity;
+}
+
+// Every floating WebView uses the main WebView's origin and profile. The storage
+// event synchronizes the picture opacity while keeping the local slider responsive.
+export function watchFloatOpacity(callback: (opacity: number) => void): () => void {
+  const update = (event: StorageEvent) => {
+    if (event.key === FLOAT_OPACITY_KEY || event.key === null) callback(readFloatOpacity());
+  };
+  window.addEventListener('storage', update);
+  return () => window.removeEventListener('storage', update);
+}
+
 export type TileSignal =
-  | { kind: 'ready' | 'mute' }
-  | { kind: 'offer'; description: RTCSessionDescriptionInit; peer: Peer }
+  | { kind: 'ready' | 'mute' | 'mute-voice' | 'toggle-picture' }
+  | { kind: 'offer'; description: RTCSessionDescriptionInit; peer: FloatTilePeer }
   | { kind: 'answer'; description: RTCSessionDescriptionInit }
-  | { kind: 'peer'; peer: Peer }
-  | { kind: 'volume'; volume: number };
+  | { kind: 'peer'; peer: FloatTilePeer }
+  | { kind: 'volume'; volume: number; channel: 'voice' | 'share' };
 interface Tile {
   label: string;
   slot: number;
-  peer: Peer;
+  peer: FloatTilePeer;
   track: MediaStreamTrack | null;
+  closing?: boolean;
   connection?: RTCPeerConnection;
   sender?: RTCRtpSender;
 }
@@ -60,12 +87,15 @@ export class TauriTiles {
   private serial = 0;
   private pending = Promise.resolve<FloatTilesStatus>({ enabled: false, tiles: [] });
   private tiles = new Map<string, Tile>();
-  private desired = new Map<string, Peer>();
+  private desired = new Map<string, FloatTilePeer>();
+  private dismissed = new Set<string>();
   private tracks = new Map<string, MediaStreamTrack>();
   private windows = new Listeners<FloatWindowStatus>();
   private statuses = new Listeners<FloatTilesStatus>();
   private mute = new Listeners<string>();
-  private volume = new Listeners<{ peerId: string; volume: number }>();
+  private muteVoice = new Listeners<string>();
+  private togglePicture = new Listeners<string>();
+  private volume = new Listeners<{ peerId: string; volume: number; channel: 'voice' | 'share' }>();
 
   async initialize(): Promise<void> {
     await listenNative<{ label: string; message: TileSignal }>('tile-signal', 'main', ({ label, message }) =>
@@ -74,17 +104,28 @@ export class TauriTiles {
       }),
     );
     await listenNative<string>('tile-closed', 'main', (label) => {
-      if (!this.tiles.has(label)) return;
+      const tile = this.tiles.get(label);
+      if (!tile) return;
       this.remove(label);
+      if (!tile.closing && this.enabled) {
+        if (![...this.tiles.values()].some((remaining) => !remaining.closing)) {
+          this.disable();
+          this.windows.emit(this.mode());
+        } else if (this.desired.has(tile.peer.peerId)) {
+          this.dismissed.add(tile.peer.peerId);
+        }
+      }
       this.statuses.emit(this.status());
     });
+    const stopWatchingOpacity = watchFloatOpacity(() => this.windows.emit(this.mode()));
     window.addEventListener('pagehide', () => {
+      stopWatchingOpacity();
       for (const label of this.tiles.keys()) this.remove(label);
     }, { once: true });
   }
 
   private mode(): FloatWindowStatus {
-    return { enabled: this.enabled, tilesEnabled: this.enabled, opacity: 1, minOpacity: 1,
+    return { enabled: this.enabled, tilesEnabled: this.enabled, opacity: readFloatOpacity(), minOpacity: MIN_FLOAT_OPACITY,
       hotkeyAvailable: false, hotkey: '' };
   }
 
@@ -98,15 +139,29 @@ export class TauriTiles {
     this.tiles.delete(label);
   }
 
+  private disable(): void {
+    this.enabled = false;
+    this.desired.clear();
+    this.dismissed.clear();
+  }
+
   private sync(): Promise<FloatTilesStatus> {
     const apply = async () => {
-      const peers = this.enabled ? this.desired : new Map<string, Peer>();
+      const peers = this.enabled ? this.desired : new Map<string, FloatTilePeer>();
       for (const [label, tile] of this.tiles) {
         if (peers.has(tile.peer.peerId)) continue;
-        await native('close_tile', { label });
+        tile.closing = true;
+        try {
+          await native('close_tile', { label });
+        } catch (error) {
+          tile.closing = false;
+          throw error;
+        }
         this.remove(label);
       }
       for (const peer of peers.values()) {
+        if (!this.enabled) break;
+        if (!this.desired.has(peer.peerId) || this.dismissed.has(peer.peerId)) continue;
         const tile = [...this.tiles.values()].find((candidate) => candidate.peer.peerId === peer.peerId);
         if (tile) {
           tile.peer = peer;
@@ -149,8 +204,10 @@ export class TauriTiles {
     const tile = this.tiles.get(label);
     if (!tile) return;
     if (message.kind === 'mute') this.mute.emit(tile.peer.peerId);
-    if (message.kind === 'volume' && Number.isFinite(message.volume)) {
-      this.volume.emit({ peerId: tile.peer.peerId, volume: Math.min(1, Math.max(0, message.volume)) });
+    if (message.kind === 'mute-voice') this.muteVoice.emit(tile.peer.peerId);
+    if (message.kind === 'toggle-picture') this.togglePicture.emit(tile.peer.peerId);
+    if (message.kind === 'volume' && Number.isFinite(message.volume) && (message.channel === 'voice' || message.channel === 'share')) {
+      this.volume.emit({ peerId: tile.peer.peerId, volume: Math.min(1, Math.max(0, message.volume)), channel: message.channel });
     }
     if (message.kind === 'ready') {
       tile.connection?.close();
@@ -172,15 +229,20 @@ export class TauriTiles {
   windowMode: GameShareApi['windowMode'] = {
     getStatus: async () => this.mode(),
     setEnabled: async (enabled) => {
-      this.enabled = enabled;
-      if (!enabled) this.desired.clear();
+      if (enabled) this.enabled = true;
+      else this.disable();
       await this.sync();
       const mode = this.mode();
       this.windows.emit(mode);
       return mode;
     },
     onStatus: this.windows.subscribe,
-    setOpacity: async () => this.mode(),
+    setOpacity: async (opacity) => {
+      writeFloatOpacity(opacity);
+      const mode = this.mode();
+      this.windows.emit(mode);
+      return mode;
+    },
     moveTo: () => undefined,
     resizeTo: () => undefined,
   };
@@ -188,13 +250,19 @@ export class TauriTiles {
   api: GameShareApi['floatTiles'] = {
     getStatus: async () => this.status(),
     syncPeers: (peers) => {
+      if (!this.enabled) return Promise.resolve(this.status());
       this.desired = new Map(peers.map((peer) => [peer.peerId, peer]));
+      for (const peerId of this.dismissed) {
+        if (!this.desired.has(peerId)) this.dismissed.delete(peerId);
+      }
       return this.sync();
     },
     onStatus: this.statuses.subscribe,
     onTileSize: () => () => undefined,
     onTilePort: () => () => undefined,
     onToggleMuteRequest: this.mute.subscribe,
+    onToggleVoiceMuteRequest: this.muteVoice.subscribe,
+    onTogglePictureRequest: this.togglePicture.subscribe,
     onVolumeRequest: this.volume.subscribe,
     setVideoTracks: (tracks) => this.updateTracks(tracks),
   };

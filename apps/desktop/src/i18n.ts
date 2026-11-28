@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from 'react';
+
 /**
  * 极简 i18n：零依赖（apps/desktop 的 dependencies 保持为空的约定），
  * 模块级单例 + useSyncExternalStore 订阅，用法与 ShareSession 的状态订阅同构。
@@ -49,6 +51,9 @@ const ZH = {
   'stage.noRoomHint': '进入房间后，共享画面会显示在这里。',
   'stage.noShare': '还没有共享画面',
   'stage.noShareHint': '选择要共享的屏幕或窗口，也可以等待其他成员共享。',
+  'stage.noRemoteShare': '暂无其他成员共享',
+  'stage.noRemoteShareHint': '其他成员开始共享后，画面会显示在这里。',
+  'stage.localPreviewHint': '你正在共享。可在「屏幕共享」中打开本地预览。',
   'stage.openRoom': '前往房间连接',
   'stage.openShare': '打开共享设置',
   'view.fullscreen': '全屏模式',
@@ -58,6 +63,33 @@ const ZH = {
   'view.floatingActive': '正在使用独立浮窗',
   'view.floatingCount': '当前显示 {n} 个成员画面浮窗',
   'view.floatingHint': '在主窗口统一调整浮窗透明度，在各浮窗内单独调整成员音量。主窗口保留控制，预览已隐藏；关闭浮窗模式可恢复主窗口预览。',
+  'view.layout': '画面布局',
+  'view.layoutFocus': '放大',
+  'view.layoutGrid': '网格',
+  'view.participants': '成员',
+  'view.voiceVolume': '语音音量',
+  'view.shareVolume': '共享声音音量',
+  'view.localControls': '本地播放控制',
+  'view.muteAll': '全部静音',
+  'view.unmuteAll': '恢复声音',
+  'view.globalMuteHint': '已在本机静音所有成员。恢复声音后可单独调整。',
+  'view.hidePicture': '暂停接收画面和共享声音',
+  'view.showPicture': '恢复接收画面',
+  'view.showPictureAndAudio': '恢复接收画面和共享声音',
+  'view.pictureHidden': '已暂停接收画面',
+  'view.pictureAndAudioPaused': '已暂停接收画面和共享声音',
+  'view.resumeIncomingShareAudio': '仅恢复接收共享声音',
+  'view.pauseIncomingShareAudio': '暂停接收共享声音',
+  'view.muteVoice': '静音语音',
+  'view.unmuteVoice': '恢复语音',
+  'view.muteShareAudio': '静音共享声音',
+  'view.unmuteShareAudio': '恢复共享声音',
+  'view.exitFloat': '退出浮窗',
+  'view.floatingViewerHint': '此处和浮窗内的透明度滑杆会同步调整所有浮窗的画面。',
+  'view.floatingNoShares': '有成员开始共享后，画面会显示为独立浮窗。',
+  'view.fullscreenFailed': '无法切换全屏，请重试。',
+  'view.floatFailed': '无法切换浮窗，请重试。',
+  'view.opacityFailed': '无法调整浮窗透明度，请重试。',
   'status.host.idle': '尚未创建房间',
   'status.host.creating': '正在创建房间',
   'status.host.waiting': '房间已创建 · 等待朋友',
@@ -190,6 +222,7 @@ const ZH = {
 
   /* 共享面板 */
   'share.title': '共享画面',
+  'share.localPreview': '本地预览',
   'share.now': '正在共享：',
   'share.unknownSource': '未知源',
   'share.audioOff': '声音已关',
@@ -368,6 +401,33 @@ const EN: Dict = {
   'view.floatingActive': 'Independent floating windows are active',
   'view.floatingCount': '{n} shared views are open',
   'view.floatingHint': 'Adjust opacity in the main window and member volume in each floating window. The main window keeps its controls with previews hidden. Turn off floating mode to restore previews.',
+  'view.layout': 'View layout',
+  'view.layoutFocus': 'Focus',
+  'view.layoutGrid': 'Grid',
+  'view.participants': 'Participants',
+  'view.voiceVolume': 'Voice volume',
+  'view.shareVolume': 'Share audio volume',
+  'view.localControls': 'Local playback controls',
+  'view.muteAll': 'Mute all',
+  'view.unmuteAll': 'Restore audio',
+  'view.globalMuteHint': 'All participants are muted locally. Restore audio to adjust someone individually.',
+  'view.hidePicture': 'Pause incoming picture and share audio',
+  'view.showPicture': 'Resume incoming picture',
+  'view.showPictureAndAudio': 'Resume incoming picture and share audio',
+  'view.pictureHidden': 'Incoming picture paused',
+  'view.pictureAndAudioPaused': 'Incoming picture and share audio paused',
+  'view.resumeIncomingShareAudio': 'Resume incoming share audio only',
+  'view.pauseIncomingShareAudio': 'Pause incoming share audio',
+  'view.muteVoice': 'Mute voice',
+  'view.unmuteVoice': 'Unmute voice',
+  'view.muteShareAudio': 'Mute share audio',
+  'view.unmuteShareAudio': 'Unmute share audio',
+  'view.exitFloat': 'Exit floating mode',
+  'view.floatingViewerHint': 'The opacity slider in this window or any floating window adjusts all floating pictures.',
+  'view.floatingNoShares': 'Shared screens will open in floating windows.',
+  'view.fullscreenFailed': 'Could not switch fullscreen mode. Try again.',
+  'view.floatFailed': 'Could not switch floating mode. Try again.',
+  'view.opacityFailed': 'Could not adjust floating picture opacity. Try again.',
   'status.host.idle': 'No room created',
   'status.host.creating': 'Creating room',
   'status.host.waiting': 'Room created · Waiting for friends',
@@ -491,6 +551,7 @@ const EN: Dict = {
   'mic.hint': 'Off by default. On: occupies the recording device. Off: releases it for real.',
 
   'share.title': 'Share screen',
+  'share.localPreview': 'Local preview',
   'share.now': 'Sharing: ',
   'share.unknownSource': 'unknown source',
   'share.audioOff': 'audio off',
@@ -554,6 +615,9 @@ const EN: Dict = {
   'stage.noRoomHint': 'Shared screens will appear here after you join a room.',
   'stage.noShare': 'No shared screens yet',
   'stage.noShareHint': 'Choose a screen or window to share, or wait for someone else to share.',
+  'stage.noRemoteShare': 'No one else is sharing',
+  'stage.noRemoteShareHint': 'Other members’ shared screens will appear here.',
+  'stage.localPreviewHint': 'You’re sharing. Open Local preview in Screen sharing to see your screen.',
   'stage.openRoom': 'Go to room connection',
   'stage.openShare': 'Open sharing controls',
   'sidebar.expand': 'Expand sidebar',
@@ -657,6 +721,11 @@ export function subscribeLang(listener: () => void): () => void {
 /** 取当前语言的文案。key 不存在时回落中文（迁移期兜底） */
 export function t(key: I18nKey): string {
   return DICTS[lang][key] ?? ZH[key];
+}
+
+export function useI18n(): typeof t {
+  useSyncExternalStore(subscribeLang, getLang);
+  return t;
 }
 
 /** 带占位符的模板：fmt('{n} 个小窗', { n: 3 }) */

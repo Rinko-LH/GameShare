@@ -1,7 +1,14 @@
+param(
+    [ValidateRange(2, 3)]
+    [int]$ClientCount = 2
+)
+
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 $target = $env:CARGO_TARGET_DIR
 if (-not $target) { $target = Join-Path $repo '.cache\tauri-target' }
+if (-not [IO.Path]::IsPathRooted($target)) { $target = Join-Path $repo $target }
+$target = [IO.Path]::GetFullPath($target)
 $exe = Join-Path $target 'x86_64-pc-windows-msvc\debug\gameshare-tauri.exe'
 $existing = @(Get-Process -Name gameshare-tauri -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
 $profiles = Join-Path $repo '.cache\manual-tauri-clients'
@@ -17,6 +24,7 @@ $first = Start-Job -ArgumentList $repo, $profiles, $target -ScriptBlock {
     }
 }
 $previousProfile = $env:WEBVIEW2_USER_DATA_FOLDER
+$otherClients = @()
 try {
     while ($true) {
         Receive-Job $first
@@ -29,12 +37,16 @@ try {
         if ($client) { break }
         Start-Sleep -Milliseconds 500
     }
-    $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $profiles 'client-2'
-    $second = Start-Process -FilePath $exe -WorkingDirectory (Join-Path $repo 'apps\tauri') -PassThru
+    for ($index = 2; $index -le $ClientCount; $index++) {
+        $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $profiles "client-$index"
+        $otherClients += Start-Process -FilePath $exe -WorkingDirectory (Join-Path $repo 'apps\tauri') -PassThru
+    }
     Receive-Job $first -Wait
 } finally {
     $env:WEBVIEW2_USER_DATA_FOLDER = $previousProfile
-    if ($second -and -not $second.HasExited) { Stop-Process -InputObject $second -ErrorAction SilentlyContinue }
+    foreach ($client in $otherClients) {
+        if (-not $client.HasExited) { Stop-Process -InputObject $client -ErrorAction SilentlyContinue }
+    }
     Stop-Job $first
     Remove-Job $first
 }

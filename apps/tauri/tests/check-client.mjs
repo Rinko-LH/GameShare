@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,6 +9,8 @@ import { io } from 'socket.io-client';
 
 if (!process.argv[2]) throw new Error('Usage: node apps/tauri/tests/check-client.mjs <gameshare-tauri.exe>');
 const exe = path.resolve(process.argv[2]);
+const development = process.argv.includes('--dev');
+const captureScreenshots = process.argv.includes('--screenshots');
 const useCloudflare = process.argv.includes('--cloudflare');
 const electronArg = process.argv.find((argument) => argument.startsWith('--electron='));
 const electronExe = electronArg && path.resolve(electronArg.slice('--electron='.length));
@@ -64,7 +66,8 @@ async function launch(name, legacy = false) {
   apps.push(app);
   child.stderr.on('data', (data) => { app.logs += data; });
   const target = await until(async () => (await app.list()).find((entry) =>
-    (legacy ? entry.url.startsWith('file:') : new URL(entry.url).hostname === 'tauri.localhost') &&
+    (legacy ? entry.url.startsWith('file:') : new URL(entry.url).origin ===
+      (development ? 'http://127.0.0.1:1420' : 'http://tauri.localhost')) &&
     !entry.url.includes('floatTile=')), `${name} main view`);
   app.evaluate = await attach(target);
   await until(() => app.evaluate(`${legacy ? '!!window.gameShare' : 'window.gameShare?.runtime === "tauri"'} && !!document.querySelector(".connection-panel")`),
@@ -79,38 +82,109 @@ async function attach(target) {
     socket.addEventListener('open', resolve, { once: true });
     socket.addEventListener('error', reject, { once: true });
   });
-  return (expression) => new Promise((resolve, reject) => {
+  const send = (method, params) => new Promise((resolve, reject) => {
     const id = ++nextCommand;
     const timer = setTimeout(() => {
       socket.removeEventListener('message', receive);
-      reject(new Error(`CDP timed out: ${expression}`));
+      reject(new Error(`CDP timed out: ${method}`));
     }, 5000);
     function receive(event) {
       const response = JSON.parse(event.data);
       if (response.id !== id) return;
       clearTimeout(timer);
       socket.removeEventListener('message', receive);
-      if (response.error || response.result.exceptionDetails) {
+      if (response.error || response.result?.exceptionDetails) {
         reject(new Error(JSON.stringify(response.error ?? response.result.exceptionDetails)));
       } else {
-        resolve(response.result.result.value);
+        resolve(response.result);
       }
     }
     socket.addEventListener('message', receive);
-    socket.send(JSON.stringify({ id, method: 'Runtime.evaluate',
-      params: { expression, awaitPromise: true, returnByValue: true, userGesture: true },
-    }));
+    socket.send(JSON.stringify({ id, method, params }));
   });
+  const evaluate = async (expression) => (await send('Runtime.evaluate', {
+    expression, awaitPromise: true, returnByValue: true, userGesture: true,
+  })).result.value;
+  evaluate.send = send;
+  return evaluate;
 }
 
 const fill = (evaluate, selector, value) => evaluate(`(() => {
   const input = document.querySelector(${JSON.stringify(selector)});
+  if (!input) throw new Error('Missing input: ' + ${JSON.stringify(selector)});
   Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value').set.call(input, ${JSON.stringify(value)});
   input.dispatchEvent(new Event(input.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
 })()`);
 
 const clickText = (evaluate, text) => evaluate(`[...document.querySelectorAll('button')].find(button =>
   button.textContent.trim() === ${JSON.stringify(text)} && button.getClientRects().length).click()`);
+
+const viewer = '[data-share-viewer]';
+const previewToggle = '[data-local-preview-toggle]';
+const previewVideo = '#local-share-preview[open] video';
+const control = (action) => `[data-viewer-action="${action}"]`;
+const peerSelector = (peerId) => `[data-viewer-peer="${peerId}"]`;
+const query = (selector) => `document.querySelector(${JSON.stringify(selector)})`;
+const click = (evaluate, selector) => evaluate(`(() => {
+  const button = ${query(selector)};
+  if (!button) throw new Error('Missing control: ' + ${JSON.stringify(selector)});
+  if (button.disabled) throw new Error('Disabled control: ' + ${JSON.stringify(selector)});
+  button.click();
+})()`);
+async function clickScreenPoint(evaluate, selector) {
+  await evaluate.send('Page.bringToFront');
+  const { x, y } = await evaluate(`(() => {
+    const button = ${query(selector)};
+    if (!button || button.disabled) throw new Error('Unavailable control: ' + ${JSON.stringify(selector)});
+    const { x, y, width, height } = button.getBoundingClientRect();
+    return { x: x + width / 2, y: y + height / 2 };
+  })()`);
+  await evaluate.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await evaluate.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+}
+async function pressKey(evaluate, key, windowsVirtualKeyCode) {
+  const params = { key, code: key, windowsVirtualKeyCode };
+  await evaluate.send('Input.dispatchKeyEvent', { ...params, type: 'keyDown' });
+  await evaluate.send('Input.dispatchKeyEvent', { ...params, type: 'keyUp' });
+}
+async function hover(evaluate, selector) {
+  const point = await evaluate(`(() => {
+    const { x, y, width, height } = ${query(selector)}.getBoundingClientRect();
+    return { x: x + width / 2, y: y + height / 2 };
+  })()`);
+  await evaluate.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+}
+const openVolume = (channel) => `.hover-volume__panel:popover-open [data-volume-channel="${channel}"]`;
+const peerNamed = (evaluate, name) => evaluate(`[...document.querySelectorAll('[data-viewer-peer]')]
+  .find(element => element.textContent.includes(${JSON.stringify(name)}))?.dataset.viewerPeer`);
+const selectedPeer = (evaluate) => evaluate(`${query(`${viewer} [data-focused="true"]`)}?.dataset.viewerPeer`);
+const decodedShares = (evaluate) => evaluate(`[...document.querySelectorAll('${viewer} video')]
+  .filter(video => video.videoWidth > 0).length`);
+const audioSelector = (peerId, role) => `audio[data-audio-peer="${peerId}"][data-audio-role="${role}"]`;
+const audioMuted = (evaluate, peerId, role) => evaluate(`${query(audioSelector(peerId, role))}?.muted`);
+const audioVolume = (evaluate, peerId, role) => evaluate(`${query(audioSelector(peerId, role))}?.volume`);
+const setSyntheticMic = (evaluate) => evaluate(`(() => {
+  navigator.mediaDevices.getUserMedia = async () => {
+    const context = new AudioContext();
+    const tone = context.createOscillator();
+    const gain = context.createGain();
+    const destination = context.createMediaStreamDestination();
+    tone.frequency.value = 660;
+    gain.gain.value = 0.002;
+    tone.connect(gain).connect(destination);
+    tone.start();
+    window.__viewerTestMic = { context, tone, track: destination.stream.getAudioTracks()[0] };
+    return destination.stream;
+  };
+})()`);
+
+async function screenshot(evaluate, name) {
+  if (!captureScreenshots) return;
+  const result = await evaluate.send('Page.captureScreenshot');
+  const file = path.join(profiles, `${name}.png`);
+  writeFileSync(file, Buffer.from(result.data, 'base64'));
+  console.log(`Screenshot: ${file}`);
+}
 
 let observer;
 try {
@@ -122,6 +196,25 @@ try {
   }
   const host = await launch('host');
   const hostEval = host.evaluate;
+  await hostEval(`(() => {
+    const connections = new Set();
+    const setDescription = RTCPeerConnection.prototype.setRemoteDescription;
+    RTCPeerConnection.prototype.setRemoteDescription = function (...args) {
+      connections.add(this);
+      return setDescription.apply(this, args);
+    };
+    window.__shareReception = async (peerId) => {
+      const voice = [...document.querySelectorAll('audio[data-audio-role="voice"]')]
+        .find(audio => audio.dataset.audioPeer === peerId)?.srcObject?.getAudioTracks()[0];
+      const pc = [...connections].find(link => link.getReceivers().some(receiver => receiver.track === voice));
+      if (!pc) return null;
+      const stats = [...(await pc.getStats()).values()];
+      return pc.getTransceivers().slice(0, 3).map(({ currentDirection, receiver }) => ({
+        currentDirection,
+        bytes: stats.find(report => report.type === 'inbound-rtp' && report.trackIdentifier === receiver.track.id)?.bytesReceived ?? 0,
+      }));
+    };
+  })()`);
   assert.equal(await hostEval('document.querySelector("#sidebar-page-room").textContent.includes("高级设置")'), false);
   assert.deepEqual(await hostEval('[...document.querySelectorAll("[data-video-quality-preset]")].map(node => node.textContent.trim())'), ['流畅', '标清', '高清']);
   assert.equal(await hostEval('document.querySelector("[data-video-quality-auto]").getAttribute("aria-pressed")'), 'true');
@@ -135,8 +228,8 @@ try {
   assert.equal(networks.state, 'stopped', 'Test requires a fresh Tauri server');
   let address = networks.lanUrls[0] ?? networks.publicV4Urls[0] ?? networks.publicV6Urls[0];
   assert.ok(address, 'Test requires a non-loopback adapter');
-  await fill(hostEval, '[data-signaling]', useCloudflare ? 'cloudflare' : 'ip');
-  await fill(hostEval, '[data-media-policy]', 'local-auto');
+  await click(hostEval, `[data-signaling="${useCloudflare ? 'cloudflare' : 'ip'}"]`);
+  await click(hostEval, '[data-media-policy="internet-auto"]');
   if (useCloudflare) {
     // Public smoke tests must never forward to a different instance already on port 8080.
     const local = await hostEval('window.gameShare.server.setEnabled(true)');
@@ -213,6 +306,8 @@ try {
   assert.equal(decoded.room, room);
   assert.equal(decoded.signaling, useCloudflare ? 'cloudflare' : 'ip');
   const guests = [];
+  let firstPeerId;
+  let secondPeerId;
   for (let i = 1; i <= 3; i += 1) {
     const legacy = i === 3 && Boolean(electronExe);
     const guest = await launch(`guest-${i}`, legacy);
@@ -233,6 +328,30 @@ try {
     }
     await until(() => guest.evaluate(`document.querySelector('.roomcode__value')?.textContent.trim() === ${JSON.stringify(room)}`), `guest ${i} joined room`);
     if (!legacy) assert.equal(await guest.evaluate('localStorage.getItem("gs.connectionConfig")'), savedConfig);
+    if (i === 2) {
+      secondPeerId = await until(() => peerNamed(hostEval, 'Guest 2'), 'voice-only member has local audio controls');
+      const secondPeer = peerSelector(secondPeerId);
+      await setSyntheticMic(guest.evaluate);
+      await click(guest.evaluate, '[data-voice-mode="continuous"]');
+      await click(guest.evaluate, '[data-voice-enable]');
+      await until(() => guest.evaluate('window.__viewerTestMic?.track.enabled && document.querySelector("[data-mic-enabled=true]") !== null'), 'voice-only member transmits');
+      await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === true, 'new voice-only member inherits global mute');
+      await click(hostEval, control('mute-all'));
+      await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === false, 'global unmute restores new member audio');
+      await click(hostEval, `${secondPeer} ${control('voice')}`);
+      await until(() => audioMuted(hostEval, secondPeerId, 'voice'), 'voice-only member can be locally muted');
+      await click(hostEval, `${secondPeer} ${control('voice')}`);
+      await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === false, 'voice-only member can be locally unmuted');
+      assert.equal(await hostEval(`${query(secondPeer)}.querySelectorAll('button').length`), 2, 'Voice-only member has only mic and speaker buttons');
+      assert.equal(await hostEval(`Boolean(${query(openVolume('voice'))})`), false, 'Volume controls start hidden');
+      await hover(hostEval, `${secondPeer} ${control('voice')}`);
+      await until(() => hostEval(`Boolean(${query(openVolume('voice'))})`), 'voice volume opens on icon hover');
+      await hover(hostEval, openVolume('voice'));
+      await fill(hostEval, openVolume('voice'), '35');
+      await until(async () => await audioVolume(hostEval, secondPeerId, 'voice') === 0.35, 'voice slider updates playback');
+      await hover(hostEval, '.share-viewer__toolbar');
+      await until(() => hostEval(`!${query(openVolume('voice'))}`), 'voice slider closes on pointer leave');
+    }
     const useRealCapture = i === 1 && captureTitle;
     if (i === 1 && !useRealCapture) {
       await guest.evaluate(`(() => {
@@ -279,21 +398,130 @@ try {
       assert.equal(await guest.evaluate('localStorage.getItem("gs.videoQuality")'), 'hd');
       console.log('PASS: quality controls update live scaling and bitrate while keeping frame rate');
     }
-    if (useRealCapture) {
-      const surfaces = await guest.evaluate(`[...document.querySelectorAll('video')].flatMap(video =>
-        video.srcObject?.getVideoTracks().map(track => track.getSettings().displaySurface) ?? [])`);
-      assert.ok(surfaces.includes('window'), JSON.stringify(surfaces));
-      console.log('PASS: selected Windows test window captured by the real WebView2 API');
+    if (i === 1) {
+      assert.equal(await guest.evaluate(`document.querySelectorAll('${viewer} video, #local-share-preview video').length`), 0,
+        'A local share stays out of the remote viewer and the closed preview');
+      await clickScreenPoint(guest.evaluate, previewToggle);
+      await until(() => guest.evaluate(`${query(previewVideo)}?.videoWidth > 0`), 'standalone local preview displays live video');
+      assert.equal(await guest.evaluate(`${query(previewVideo)}.muted`), true);
+      if (useRealCapture) {
+        assert.equal(await guest.evaluate(`${query(previewVideo)}.srcObject.getVideoTracks()[0].getSettings().displaySurface`), 'window');
+        console.log('PASS: selected Windows test window captured by the real WebView2 API');
+      }
+      if (useRealCapture) await screenshot(guest.evaluate, 'local-window-capture');
+      await pressKey(guest.evaluate, 'Escape', 27);
+      await until(() => guest.evaluate(`!${query('#local-share-preview video')} && document.activeElement === ${query(previewToggle)}`),
+        'Escape closes preview, removes video and returns focus to its entry');
+      console.log('PASS: local preview opens separately and returns focus without stopping sharing');
+      firstPeerId = await until(() => peerNamed(hostEval, 'Guest 1'), 'first shared video appears in viewer');
+      await until(async () => await selectedPeer(hostEval) === firstPeerId, 'first share is focused by default');
+      assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'focus');
+      await click(hostEval, control('mute-all'));
+    }
+    if (i === 2) {
+      await until(async () => await decodedShares(guest.evaluate) === 1, 'only the other shared screen is visible while sharing');
+      assert.equal(await selectedPeer(guest.evaluate), firstPeerId);
+      await clickScreenPoint(guest.evaluate, previewToggle);
+      await until(() => guest.evaluate(`${query(previewVideo)}?.videoWidth > 0`), 'local preview is available alongside a remote share');
+      await screenshot(guest.evaluate, 'local-preview');
+      await click(guest.evaluate, '#local-share-preview button[type="submit"]');
+      await until(() => guest.evaluate(`!${query(previewVideo)}`), 'close button dismisses local preview');
+      assert.equal(await selectedPeer(guest.evaluate), firstPeerId, 'Local preview must preserve the selected remote view');
     }
   }
   console.log('PASS: Rust server, room creation, GS3 invitation and three remote senders');
   if (electronExe) console.log('PASS: Electron 1.6.2 joined the Tauri room and sent video');
-  await hostEval('document.querySelector("[data-float-toggle]").click()');
-  const windows = await until(async () => {
-    const tiles = (await host.list()).filter((entry) => entry.url.includes('floatTile='));
-    return tiles.length === 3 && tiles;
-  }, 'three independent Tauri float windows');
-  const tiles = await Promise.all(windows.map(attach));
+  const secondPeer = peerSelector(secondPeerId);
+  const voiceControl = `${secondPeer} ${control('voice')}`;
+  const shareAudioControl = `${secondPeer} ${control('share-audio')}`;
+  const pictureControl = `${secondPeer} ${control('picture')}`;
+  const fullscreenControl = control('fullscreen');
+  await until(async () => await decodedShares(hostEval) === 3, 'all three shares decoded in the main viewer');
+  assert.equal(await selectedPeer(hostEval), firstPeerId, 'New shares must preserve current focus');
+  await click(hostEval, control('layout-grid'));
+  assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'grid');
+  await until(async () => await decodedShares(hostEval) === 3, 'grid displays all live shares');
+  await screenshot(hostEval, 'viewer-grid');
+  await click(hostEval, `${secondPeer} ${control('focus')}`);
+  assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'focus');
+  assert.equal(await selectedPeer(hostEval), secondPeerId);
+  await until(async () => await decodedShares(hostEval) === 3, 'focus layout keeps all live shares accessible');
+  await screenshot(hostEval, 'viewer-focus');
+  await until(async () => await audioMuted(hostEval, secondPeerId, 'share') === false, 'shared audio is playing alongside voice');
+
+  await click(hostEval, voiceControl);
+  await until(() => audioMuted(hostEval, secondPeerId, 'voice'), 'mic icon mutes one received voice');
+  assert.equal(await audioMuted(hostEval, secondPeerId, 'share'), false);
+  await click(hostEval, shareAudioControl);
+  await until(() => audioMuted(hostEval, secondPeerId, 'share'), 'speaker icon mutes one received shared audio');
+  await click(hostEval, shareAudioControl);
+  await until(async () => await audioMuted(hostEval, secondPeerId, 'share') === false, 'speaker icon can restore shared audio');
+  assert.equal(await audioMuted(guests[0].evaluate, secondPeerId, 'voice'), false, 'Other listeners must still hear the sender');
+  assert.equal(await guests[1].evaluate('window.__viewerTestMic.track.enabled'), true, 'The sender must stay unmuted');
+
+  const shareReception = () => hostEval(`window.__shareReception(${JSON.stringify(secondPeerId)})`);
+  await until(async () => (await shareReception())?.every(({ bytes }) => bytes > 0), 'three incoming RTP streams transmit before pause');
+  await click(hostEval, pictureControl);
+  await until(() => hostEval(`Boolean(${query(`${secondPeer} [data-viewer-picture-hidden]`)})`), 'selected share is locally paused');
+  await until(async () => {
+    const [video, voice, share] = await shareReception();
+    return video.currentDirection === 'sendonly' && voice.currentDirection === 'sendrecv' && share.currentDirection === 'sendonly';
+  }, 'video and share audio stop arriving over WebRTC');
+  assert.equal(await audioMuted(hostEval, secondPeerId, 'share'), true);
+  const earlier = await shareReception();
+  await sleep(1200);
+  const later = await shareReception();
+  assert.equal(later[0].bytes, earlier[0].bytes, 'Paused video RTP bytes must stop growing');
+  assert.equal(later[2].bytes, earlier[2].bytes, 'Paused share audio RTP bytes must stop growing');
+  assert.ok(later[1].bytes > earlier[1].bytes, 'Voice RTP bytes must still grow');
+  assert.equal(await audioMuted(guests[0].evaluate, secondPeerId, 'share'), false, 'Other viewers keep their share audio');
+  await click(hostEval, pictureControl);
+  await until(async () => {
+    const streams = await shareReception();
+    return streams.every(({ currentDirection }) => currentDirection === 'sendrecv') &&
+      streams[0].bytes > later[0].bytes && streams[2].bytes > later[2].bytes;
+  }, 'incoming video and share audio resume');
+  await until(() => hostEval(`${query(`${secondPeer} video`)}?.videoWidth > 0`), 'restored share shows live video');
+
+  await click(hostEval, control('mute-all'));
+  await until(() => hostEval('document.querySelectorAll("audio[data-audio-peer]").length > 2 && [...document.querySelectorAll("audio[data-audio-peer]")].every(audio => audio.muted)'), 'global mute silences every received audio role');
+  await click(hostEval, control('mute-all'));
+  await until(async () => await audioMuted(hostEval, secondPeerId, 'share') === false, 'global unmute restores previously enabled shared audio');
+  assert.equal(await audioMuted(hostEval, secondPeerId, 'voice'), true, 'Global mute must preserve individual preferences');
+  await click(hostEval, voiceControl);
+  await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === false, 'restore voice');
+
+  const normalBounds = await hostEval('[innerWidth, innerHeight]');
+  await clickScreenPoint(hostEval, fullscreenControl);
+  try {
+    await until(() => hostEval(`document.fullscreenElement?.contains(${query(viewer)}) &&
+      Math.abs(innerWidth - screen.width) <= 2 && Math.abs(innerHeight - screen.height) <= 2`), 'viewer enters native monitor fullscreen');
+  } catch (error) {
+    console.error('Fullscreen diagnostics:', normalBounds, await hostEval(`({
+      fullscreen: document.fullscreenElement?.className,
+      area: [innerWidth, innerHeight], outer: [outerWidth, outerHeight],
+      screen: [screen.width, screen.height], visible: document.visibilityState,
+      error: document.querySelector('.share-viewer__error')?.textContent,
+    })`));
+    throw error;
+  }
+  await screenshot(hostEval, 'viewer-fullscreen');
+  await clickScreenPoint(hostEval, fullscreenControl);
+  await until(() => hostEval(`document.fullscreenElement === null &&
+    innerWidth === ${normalBounds[0]} && innerHeight === ${normalBounds[1]}`), 'exiting fullscreen restores the previous window dimensions');
+  assert.equal(await selectedPeer(hostEval), secondPeerId, 'Fullscreen round trip must preserve selection');
+  console.log('PASS: layouts, fullscreen, local mutes, and incoming share RTP pause with voice retained');
+
+  const floatWindows = async () => (await host.list()).filter((entry) => entry.url.includes('floatTile='));
+  const openFloats = async () => {
+    await click(hostEval, control('float'));
+    const windows = await until(async () => {
+      const tiles = await floatWindows();
+      return tiles.length === 3 && tiles;
+    }, 'three independent Tauri float windows');
+    return Promise.all(windows.map(attach));
+  };
+  let tiles = await openFloats();
   const sample = (tile) => tile(`(() => {
     const video = document.querySelector('video');
     return { frames: video?.getVideoPlaybackQuality().totalVideoFrames ?? 0,
@@ -308,8 +536,78 @@ try {
   }
   const before = await Promise.all(tiles.map(sample));
   assert.deepEqual(before.map((tile) => tile.name).sort(), ['Guest 1', 'Guest 2', 'Guest 3']);
-  await tiles[0]('document.querySelector(".tilewin__mute").click()');
-  await until(() => tiles[0]('document.querySelector(".tilewin__mute").classList.contains("tilewin__mute--on")'), 'float mute updated main state and returned to tile');
+  const secondTile = tiles[before.findIndex((tile) => tile.name === 'Guest 2')];
+  const floatControl = (action) => `[data-float-action="${action}"]`;
+  const leaveFloat = () => secondTile.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: -5, y: -5 });
+  const floatControlsVisible = (visible) => secondTile(`
+    ['.tilewin__header', '.tilewin__settings', '.tilewin__grip'].every(selector => {
+      const style = getComputedStyle(document.querySelector(selector));
+      return Number(style.opacity) === ${visible ? 1 : 0} && style.pointerEvents === '${visible ? 'auto' : 'none'}';
+    })`);
+  await leaveFloat();
+  await until(() => floatControlsVisible(false), 'float controls start hidden with pointer outside');
+  await secondTile.send('Page.bringToFront');
+  await pressKey(secondTile, 'Tab', 9);
+  await until(() => floatControlsVisible(true), 'keyboard focus reveals float controls');
+  await secondTile('document.activeElement.blur()');
+  await until(() => floatControlsVisible(false), 'float controls hide again after keyboard blur');
+  await hover(secondTile, '.tilewin__video');
+  await until(() => floatControlsVisible(true), 'entering the float reveals its controls');
+  await hover(secondTile, floatControl('share-audio'));
+  await until(() => secondTile(`Boolean(${query(openVolume('share'))})`), 'float speaker opens its slider');
+  await hover(secondTile, openVolume('share'));
+  await fill(secondTile, openVolume('share'), '65');
+  await until(async () => await audioVolume(hostEval, secondPeerId, 'share') === 0.65, 'float speaker slider changes shared audio');
+  assert.equal(await audioVolume(hostEval, secondPeerId, 'voice'), 0.35, 'Float speaker slider preserves voice volume');
+  await leaveFloat();
+  await until(async () => await floatControlsVisible(false) && await secondTile(`!${query(openVolume('share'))}`),
+    'moving directly out of the float closes its volume popover and controls');
+  await hover(secondTile, '[data-float-opacity]');
+  await until(() => floatControlsVisible(true), 're-entering the float reveals its controls');
+  await clickScreenPoint(secondTile, '[data-float-opacity]');
+  await leaveFloat();
+  await until(() => floatControlsVisible(false), 'float controls hide on leave after a pointer click');
+  await hover(secondTile, '.tilewin__video');
+  await until(() => floatControlsVisible(true), 'float controls reappear when the pointer returns');
+  await click(secondTile, floatControl('share-audio'));
+  await until(() => audioMuted(hostEval, secondPeerId, 'share'), 'float speaker button mutes the main window playback');
+  assert.equal(await audioMuted(hostEval, secondPeerId, 'voice'), false);
+  await click(secondTile, floatControl('voice'));
+  await until(() => audioMuted(hostEval, secondPeerId, 'voice'), 'float mic button mutes the main window voice playback');
+  await click(secondTile, floatControl('picture'));
+  await until(async () => (await shareReception())[0].currentDirection === 'sendonly' &&
+    await secondTile('document.querySelector(".tilewin__video").hidden'), 'floating control pauses incoming video');
+  const hiddenFrames = (await sample(secondTile)).frames;
+  await click(secondTile, floatControl('picture'));
+  await until(async () => (await shareReception())[2].currentDirection === 'sendrecv' &&
+    await secondTile('!document.querySelector(".tilewin__video").hidden'), 'floating control restores incoming share audio and video');
+  await until(async () => (await sample(secondTile)).frames > hiddenFrames, 'restored float picture resumes live frames');
+  assert.equal(await audioMuted(hostEval, secondPeerId, 'share'), true, 'Resuming must preserve the earlier share audio mute');
+  await click(secondTile, floatControl('share-audio'));
+  await click(secondTile, floatControl('voice'));
+  const opacitySlider = '[data-float-opacity]';
+  const opacityIs = (value) => Promise.all(tiles.map((tile) => tile(`
+    Number(${query(opacitySlider)}.value) === ${value} &&
+    Number(getComputedStyle(document.querySelector('.tilewin__video')).opacity) === ${value / 100} &&
+    Number(getComputedStyle(document.querySelector('.tilewin')).opacity) === 1
+  `))).then((matches) => matches.every(Boolean));
+  await fill(hostEval, control('opacity'), '65');
+  await until(() => opacityIs(65), 'main opacity slider is live across all floating windows');
+  await secondTile(`${query(opacitySlider)}.focus()`);
+  await pressKey(secondTile, 'ArrowRight', 39);
+  await until(() => opacityIs(70), 'float opacity is keyboard-adjustable and syncs all video surfaces');
+  await screenshot(secondTile, 'float-opacity');
+
+  await clickScreenPoint(hostEval, fullscreenControl);
+  await until(async () => (await floatWindows()).length === 0 && await hostEval('Boolean(document.fullscreenElement)'), 'entering fullscreen closes independent floats');
+  await pressKey(hostEval, 'Escape', 27);
+  await until(() => hostEval('document.fullscreenElement === null'), 'Escape exits fullscreen after float mode');
+  assert.equal(await selectedPeer(hostEval), secondPeerId);
+  tiles = await openFloats();
+  await until(() => opacityIs(70), 'opacity is preserved after reopening float mode');
+  await until(async () => (await Promise.all(tiles.map(sample))).every((tile) => tile.width > 0 && tile.frames > 10), 'reopened floats contain live video');
+  console.log('PASS: floating controls update local playback, keyboard opacity syncs live, and switching to fullscreen closes floats');
+
   await hostEval('window.gameShare.windowControl.minimize()');
   await sleep(600);
   const start = await Promise.all(tiles.map(sample));
@@ -319,12 +617,21 @@ try {
   const fps = end.map((tile, index) => (tile.frames - start[index].frames) * 1000 / period);
   assert.ok(fps.every((rate) => rate >= 15), JSON.stringify(fps));
   console.log('PASS: native float windows, peer identity, mute and continued playback while minimized', fps);
+  await click(guests[0].evaluate, previewToggle);
+  await until(() => guests[0].evaluate(`${query(previewVideo)}?.videoWidth > 0`), 'local preview opened before capture ends');
   await clickText(guests[0].evaluate, '停止共享');
+  await until(() => guests[0].evaluate(`!${query('#local-share-preview[open]')} && !${query(previewToggle)}`),
+    'ending the share closes the preview and removes its entry');
   await until(async () => (await host.list()).filter((entry) => entry.url.includes('floatTile=')).length === 2, 'stopping share removed only the matching float window');
   const remaining = (await host.list()).find((entry) => entry.url.includes('floatTile='));
   const float = await attach(remaining);
   await float('document.querySelector(\'.tilewin__bar button[aria-label="关闭"]\').click()');
   await until(async () => (await host.list()).filter((entry) => entry.url.includes('floatTile=')).length === 1, 'close button removed only its own float window');
+  await hostEval(`window.gameShare.floatTiles.onStatus(status => { window.__viewerTestFloatStatus = status; });`);
+  await click(hostEval, control('mute-all'));
+  const updatedFloats = await until(() => hostEval('window.__viewerTestFloatStatus'), 'global mute resynchronized floating windows');
+  assert.equal(updatedFloats.tiles.length, 1, 'Changing global mute must keep a manually closed float dismissed');
+  assert.equal((await floatWindows()).length, 1, 'Changing global mute must keep a manually closed float dismissed');
   await hostEval('window.gameShare.windowMode.setEnabled(false)');
   await until(async () => !(await host.list()).some((entry) => entry.url.includes('floatTile=')), 'disabling float mode closed all float windows');
   console.log('PASS: stopping share, closing one float, and disabling float mode cleaned up the windows');

@@ -16,7 +16,7 @@ import { MicCapture, type MicSettings } from '../media/MicCapture';
 import type { AudioApplication } from '../media/process-audio';
 import { MeshManager } from '../rtc/MeshManager';
 import type { LinkDiagnosis } from '../rtc/PeerLink';
-import type { LinkState, RemoteTracks } from '../rtc/types';
+import type { LinkState, RemoteTracks, ShareReceptionPause } from '../rtc/types';
 import {
   SignalingClient,
   SignalingError,
@@ -221,6 +221,7 @@ export class ShareSession {
   #state: SessionState = { ...INITIAL_STATE, voiceMode: readVoicePreferences().mode };
   #micRequest = 0;
   #voiceHeld = { button: false, keyboard: false };
+  #incomingSharePauses: ReadonlyMap<string, ShareReceptionPause> = new Map();
   #listeners = new Set<() => void>();
   #unsubscribe: Array<() => void> = [];
   #serverUrl = DEFAULT_SIGNALING_URL;
@@ -677,10 +678,18 @@ export class ShareSession {
     }
 
     this.#mesh.syncPeers([room.self.peerId, ...room.peers.map((p) => p.peerId)]);
+    this.setIncomingSharePauses(this.#incomingSharePauses);
 
     // 诊断轮询跟着 Mesh 走：Mesh 重建时旧定时器必须掐掉，否则会出现两个轮询
     // 同时往同一个 state 写 —— 表现为诊断偶尔"跳"回去。
     this.#startDiagnosisPolling();
+  }
+
+  setIncomingSharePauses(pauses: ReadonlyMap<string, ShareReceptionPause>): void {
+    this.#incomingSharePauses = pauses;
+    for (const [peerId, link] of this.#mesh?.links ?? []) {
+      link.setIncomingSharePause(pauses.get(peerId) ?? null);
+    }
   }
 
   /** 把当前真实存在的本地轨补挂到 Mesh 上（进房 / 重建 Mesh 后用） */

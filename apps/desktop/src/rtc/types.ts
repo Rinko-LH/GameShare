@@ -19,6 +19,8 @@ export type LinkState = 'new' | 'connecting' | 'connected' | 'disconnected' | 'f
 export type LocalTracks = RoleMap<MediaStreamTrack | null>;
 export type RemoteTracks = RoleMap<MediaStreamTrack | null>;
 
+export type ShareReceptionPause = 'picture' | 'picture-and-audio';
+
 /**
  * 三条轨全空的初始表。
  *

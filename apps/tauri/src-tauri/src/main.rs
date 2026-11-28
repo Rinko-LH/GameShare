@@ -73,7 +73,8 @@ async fn open_tile(
         .min_inner_size(220.0, 145.0)
         .decorations(false)
         .shadow(false)
-        .background_color(tauri::window::Color(0, 0, 0, 255))
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
         .position(
             50.0 + 375.0 * (slot % 3) as f64,
             92.0 + 255.0 * (slot / 3) as f64,
@@ -108,7 +109,11 @@ fn tile_signal(window: WebviewWindow, label: String, message: Value) -> Result<(
     let kind = message["kind"].as_str().unwrap_or("");
     let destination = match (window.label(), kind) {
         ("main", "offer" | "peer") => label.as_str(),
-        (sender, "ready" | "answer" | "mute" | "volume") if sender == label => "main",
+        (sender, "ready" | "answer" | "mute" | "mute-voice" | "toggle-picture" | "volume")
+            if sender == label =>
+        {
+            "main"
+        }
         _ => return Err("无效的浮窗消息方向".into()),
     };
     window

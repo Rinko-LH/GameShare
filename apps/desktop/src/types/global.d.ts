@@ -207,6 +207,19 @@ export interface FloatTilesStatus {
   tiles: FloatTileInfo[];
 }
 
+export interface FloatTilePeer {
+  peerId: string;
+  name: string;
+  muted?: boolean;
+  volume?: number;
+  voiceVolume?: number;
+  shareVolume?: number;
+  voiceMuted?: boolean;
+  globalMuted?: boolean;
+  pictureHidden?: boolean;
+  shareAudioPaused?: boolean;
+}
+
 /**
  * 小窗页面独有的 API（`electron/preload-tile.ts`）。
  *
@@ -350,7 +363,7 @@ export interface GameShareApi {
    */
   floatTiles: {
     setVideoTracks?(tracks: ReadonlyMap<string, MediaStreamTrack>): void;
-    onVolumeRequest(callback: (data: { peerId: string; volume: number }) => void): () => void;
+    onVolumeRequest(callback: (data: { peerId: string; volume: number; channel?: 'voice' | 'share' }) => void): () => void;
     getStatus(): Promise<FloatTilesStatus>;
     /**
      * 上报「每个对端开一个窗」。顺序即位置：index 0 是第一个对端。
@@ -358,9 +371,7 @@ export interface GameShareApi {
      * `muted` 是**本机对那一路的静音状态**，小窗上的按钮照着它显示 ——
      * 不带的话小窗会一直写着「有声」，点一下反而会放开用户已经静音的那一路。
      */
-    syncPeers(
-      peers: Array<{ peerId: string; name: string; muted?: boolean; volume?: number }>,
-    ): Promise<FloatTilesStatus>;
+    syncPeers(peers: FloatTilePeer[]): Promise<FloatTilesStatus>;
     onStatus(callback: (status: FloatTilesStatus) => void): () => void;
     /** meta 里带序号与对端身份（`peerId` / `name`，换人后是新值） */
     onTilePort(
@@ -369,6 +380,8 @@ export interface GameShareApi {
     onTileSize(callback: (info: { index: number; width: number; height: number }) => void): () => void;
     /** 小窗上按了「静音这一路」—— 真正切静音的是主窗口（声音在那儿出） */
     onToggleMuteRequest(callback: (peerId: string) => void): () => void;
+    onToggleVoiceMuteRequest?(callback: (peerId: string) => void): () => void;
+    onTogglePictureRequest?(callback: (peerId: string) => void): () => void;
   };
 }
 

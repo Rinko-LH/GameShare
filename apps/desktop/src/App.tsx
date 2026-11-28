@@ -12,25 +12,19 @@ import type {
   FloatWindowStatus,
   TunnelStatus,
 } from './types/global';
-import type { LinkStats, RemoteTracks } from './rtc/types';
+import type { LinkStats, RemoteTracks, ShareReceptionPause } from './rtc/types';
 import { formatBitrate } from './rtc/stats';
 import type { LinkDiagnosis } from './rtc/PeerLink';
 import { startFloatTilePump } from './media/float-tile-pump';
 import { ShareSession } from './session/ShareSession';
 import { ConnectionPanel } from './ConnectionPanel';
 import { ApplicationAudioPicker } from './ApplicationAudioPicker';
+import { ShareViewer, type ShareViewerParticipant } from './ShareViewer';
 import { VoicePanel, useVoiceHotkey } from './VoicePanel';
 import { readVoicePreferences } from './voice-settings';
 import { DEFAULT_CONNECTION_CONFIG, readConnectionConfig, saveConnectionConfig, type ConnectionConfig } from './connection-config';
 import { createInvitation, resolveInvitationConfig, parseInvitation } from './invitations';
-import { getLang, setLang, subscribeLang, t as lookup, fmt } from './i18n';
-import type { I18nKey } from './i18n';
-
-/** 语言切换的订阅：lang 变化触发重渲染，文案经 t() 取当前语言的值 */
-const useI18n = (): typeof lookup => {
-  useSyncExternalStore(subscribeLang, getLang);
-  return lookup;
-};
+import { getLang, setLang, useI18n, fmt, type I18nKey } from './i18n';
 
 /* 状态文案存 i18n key，使用处经 t() 取当前语言 */
 const LINK_LABEL: Record<string, I18nKey> = {
@@ -76,6 +70,7 @@ interface PeerAudioPref {
   voiceMuted: boolean;
   appVol: number;
   appMuted: boolean;
+  shareReceptionPause: ShareReceptionPause | null;
 }
 
 const DEFAULT_PEER_AUDIO: PeerAudioPref = {
@@ -85,6 +80,7 @@ const DEFAULT_PEER_AUDIO: PeerAudioPref = {
   voiceMuted: false,
   appVol: 1,
   appMuted: false,
+  shareReceptionPause: null,
 };
 
 /** 共享声音的三种正式状态（任务书口径）；`loopback` 是调试模式，不进界面 */
@@ -163,6 +159,7 @@ export default function App() {
    */
   const [floatWindow, setFloatWindow] = useState<FloatWindowStatus | null>(null);
   const [floatBusy, setFloatBusy] = useState(false);
+  const [viewError, setViewError] = useState<I18nKey | null>(null);
 
   /**
    * 浮窗的**拆分**模式：每一路远端画面变成一个独立小窗（窗数 = 总人数 − 1）。
@@ -184,24 +181,40 @@ export default function App() {
     fullscreenExitTimer.current = setTimeout(() => setFullscreenExitVisible(false), 2000);
   }, []);
   useEffect(() => {
-    if (stageFullscreen) showFullscreenExit();
+    if (stageFullscreen && !isTauri) showFullscreenExit();
     else setFullscreenExitVisible(false);
     return () => { if (fullscreenExitTimer.current) clearTimeout(fullscreenExitTimer.current); };
-  }, [stageFullscreen, showFullscreenExit]);
+  }, [isTauri, stageFullscreen, showFullscreenExit]);
 
   useEffect(() => {
     const syncFullscreen = (): void => {
-      setStageFullscreen(document.fullscreenElement === stageRef.current);
+      setStageFullscreen(Boolean(stageRef.current && document.fullscreenElement === stageRef.current));
     };
     document.addEventListener('fullscreenchange', syncFullscreen);
     return () => document.removeEventListener('fullscreenchange', syncFullscreen);
   }, []);
 
-  const exitStageFullscreen = async (): Promise<void> => {
+  const exitStageFullscreen = useCallback(async (): Promise<void> => {
     if (document.fullscreenElement) await document.exitFullscreen();
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri || !stageFullscreen) return undefined;
+    const handleEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented || document.fullscreenElement !== stageRef.current) return;
+      event.preventDefault();
+      void exitStageFullscreen().catch((error) => {
+        setViewError('view.fullscreenFailed');
+        session.pushLog(ShareSession.describeError(error));
+      });
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [exitStageFullscreen, isTauri, session, stageFullscreen]);
 
   const logDialog = useRef<HTMLDialogElement>(null);
+  const localPreviewDialog = useRef<HTMLDialogElement>(null);
+  const [localPreviewOpen, setLocalPreviewOpen] = useState(false);
   const [logCopyStatus, setLogCopyStatus] = useState<'copying' | 'copied' | 'failed'>();
   const [sidePage, setSidePage] = useState<'room' | 'share'>('room');
   const bodyRef = useRef<HTMLElement>(null);
@@ -279,21 +292,19 @@ export default function App() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }, []);
 
-  /**
-   * 被静音的远端 peerId 集合。默认全不静音。
-   *
-   * 注意语义：这是**本机不听**这一路的声音，不影响对方、也不影响别人。
-   * 之所以按「人」而不是按「窗口」静音，是因为 Windows 的 loopback 采的
-   * 是整机混音 —— 一路共享里本来就只有一个人的全部声音，分不出来。
-   */
-
-  /**
-   * 远端分轨音量偏好（peerId → 偏好）。没出现的 peer 用 `DEFAULT_PEER_AUDIO`。
-   *
-   * 与 `mutedPeers` 的关系：`mutedPeers` 现在只服务浮窗小窗的一键静音
-   * （那里面放不下两根滑杆）；常规网格里用这份细粒度偏好。
-   */
+  /** 按成员保存本机分轨播放偏好。全局静音只覆盖播放状态。 */
   const [peerAudio, setPeerAudio] = useState<Record<string, PeerAudioPref>>({});
+  const [globalMuted, setGlobalMuted] = useState(false);
+  const shareReceptionPauses = useMemo(() => {
+    const pauses = new Map<string, ShareReceptionPause>();
+    for (const [peerId, pref] of Object.entries(peerAudio)) {
+      if (pref.shareReceptionPause) pauses.set(peerId, pref.shareReceptionPause);
+    }
+    return pauses;
+  }, [peerAudio]);
+  useEffect(() => {
+    if (isTauri) session.setIncomingSharePauses(shareReceptionPauses);
+  }, [shareReceptionPauses, isTauri, session]);
   /** 音量小面板当前展开在哪一个 tile 上；null = 全收起 */
   const [volPanelPeer, setVolPanelPeer] = useState<string | null>(null);
 
@@ -306,6 +317,8 @@ export default function App() {
 
   /** 被放大到主画面的那一路；null 表示网格布局 */
   const [focusedPeerId, setFocusedPeerId] = useState<string | null>(null);
+  const [viewerLayout, setViewerLayout] = useState<'focus' | 'grid'>('focus');
+  const [viewerFocus, setViewerFocus] = useState<string | null>(null);
 
   const {
     connection,
@@ -327,8 +340,19 @@ export default function App() {
   const connected = connection.state === 'connected';
   const inRoom = room !== null;
   useEffect(() => {
+    if (!sharing || !inRoom) localPreviewDialog.current?.close();
+  }, [inRoom, sharing]);
+  useEffect(() => {
     setSidePage(inRoom ? 'share' : 'room');
   }, [inRoom]);
+  useEffect(() => {
+    if (!isTauri || inRoom) return;
+    setViewerLayout('focus');
+    setViewerFocus(null);
+    setGlobalMuted(false);
+    setPeerAudio({});
+    setViewError(null);
+  }, [inRoom, isTauri]);
 
   // 房主看实际房间进度；后台服务启动不等于已经创建房间。
   const headerStatus = connectionRole === 'host'
@@ -512,18 +536,28 @@ export default function App() {
   const isFloat = floatWindow?.enabled === true;
 
   useEffect(() => {
-    if (!isFloat) return;
+    if (!isFloat || isTauri) return;
     setSideCollapsed(false);
     window.localStorage.setItem('gs.sidebarCollapsed', '0');
-  }, [isFloat]);
+  }, [isFloat, isTauri]);
 
   const handleMainView = async () => {
     setFloatBusy(true);
+    if (isTauri) setViewError(null);
     try {
-      if (isFloat && window.gameShare?.windowMode) setFloatWindow(await window.gameShare.windowMode.setEnabled(false));
-      if (document.fullscreenElement) await exitStageFullscreen();
-      else await stageRef.current?.requestFullscreen();
+      const floatApi = window.gameShare?.windowMode;
+      if (!isTauri && isFloat && floatApi) setFloatWindow(await floatApi.setEnabled(false));
+      if (document.fullscreenElement) {
+        await exitStageFullscreen();
+      } else {
+        const stage = stageRef.current;
+        if (!stage) return;
+        // Fullscreen consumes user activation. Request it before waiting for native float IPC.
+        await stage.requestFullscreen();
+        if (isTauri && isFloat && floatApi) setFloatWindow(await floatApi.setEnabled(false));
+      }
     } catch (err) {
+      if (isTauri) setViewError('view.fullscreenFailed');
       session.pushLog(ShareSession.describeError(err));
     } finally { setFloatBusy(false); }
   };
@@ -532,22 +566,39 @@ export default function App() {
     const api = window.gameShare?.windowMode;
     if (!api) return;
     setFloatBusy(true);
+    if (isTauri) setViewError(null);
     try {
+      if (isTauri && enabled && document.fullscreenElement === stageRef.current) await exitStageFullscreen();
       setFloatWindow(await api.setEnabled(enabled));
+    } catch (err) {
+      if (isTauri) setViewError('view.floatFailed');
+      session.pushLog(ShareSession.describeError(err));
     } finally {
       setFloatBusy(false);
     }
-  }, []);
+  }, [exitStageFullscreen, isTauri, session]);
 
-  /**
-   * 透明度滑杆。拖动会连续触发，主进程那边攒着写盘，
-   * 所以这里刻意不做防抖 —— 防抖会让滑杆拖起来发黏。
-   */
+  useEffect(() => {
+    if (!isTauri || inRoom) return;
+    if (isFloat) void handleToggleFloat(false);
+    if (document.fullscreenElement === stageRef.current && document.fullscreenElement) {
+      void exitStageFullscreen().catch((err) => session.pushLog(ShareSession.describeError(err)));
+    }
+  }, [exitStageFullscreen, handleToggleFloat, inRoom, isFloat, isTauri, session]);
+
+  /** Tauri 通过状态订阅同步主窗口和浮窗两处的调整。 */
   const handleOpacity = useCallback(async (value: number): Promise<void> => {
     const api = window.gameShare?.windowMode;
     if (!api) return;
-    setFloatWindow(await api.setOpacity(value));
-  }, []);
+    try {
+      const status = await api.setOpacity(value);
+      if (!isTauri) setFloatWindow(status);
+      else setViewError(null);
+    } catch (err) {
+      if (isTauri) setViewError('view.opacityFailed');
+      session.pushLog(ShareSession.describeError(err));
+    }
+  }, [isTauri, session]);
 
   /**
    * 复制一条完整的邀请信息。
@@ -858,6 +909,38 @@ export default function App() {
     }));
   }, []);
 
+  const togglePeerChannel = useCallback((peerId: string, channel: 'voice' | 'share'): void => {
+    if (globalMuted) return;
+    const key = channel === 'voice' ? 'voiceMuted' : 'appMuted';
+    setPeerAudio((prev) => {
+      const pref = prev[peerId] ?? DEFAULT_PEER_AUDIO;
+      if (channel === 'share' && pref.shareReceptionPause === 'picture-and-audio') {
+        return { ...prev, [peerId]: { ...pref, shareReceptionPause: 'picture', appMuted: false } };
+      }
+      if (channel === 'share' && pref.shareReceptionPause === 'picture') {
+        return { ...prev, [peerId]: { ...pref, shareReceptionPause: 'picture-and-audio' } };
+      }
+      return { ...prev, [peerId]: { ...pref, [key]: !pref[key] } };
+    });
+  }, [globalMuted]);
+
+  const togglePeerPicture = useCallback((peerId: string): void => {
+    setPeerAudio((prev) => {
+      const pref = prev[peerId] ?? DEFAULT_PEER_AUDIO;
+      const shareReceptionPause = pref.shareReceptionPause ? null : 'picture-and-audio';
+      return { ...prev, [peerId]: { ...pref, shareReceptionPause } };
+    });
+  }, []);
+
+  const firstRemoteShare = remotePeers.find((peer) => remoteSharing[peer.peerId])?.peerId ?? null;
+  const activeViewerFocus = viewerFocus && remoteSharing[viewerFocus] && remotePeers.some((peer) => peer.peerId === viewerFocus)
+    ? viewerFocus
+    : firstRemoteShare;
+
+  useEffect(() => {
+    if (isTauri) setViewerFocus(activeViewerFocus);
+  }, [activeViewerFocus, isTauri]);
+
   /* ---------------- 放大 ---------------- */
 
   /**
@@ -970,7 +1053,17 @@ export default function App() {
     </>
   );
 
-  const renderSelfTile = (variant: TileVariant) => (
+  const currentShareSummary = <p className="hint">
+    {t('share.now')}
+    {captureLabel ?? t('share.unknownSource')}
+    <span className={appAudioEnabled ? 'tag tag--live' : 'tag'}>
+      {appAudioEnabled
+        ? t(isTauri && !audioMode ? 'audio.withSound' : AUDIO_MODE_LABEL[audioMode ?? 'none'] ?? 'audio.withSound')
+        : t(isTauri || audioMode === 'none' ? 'audio.tag.none' : 'share.audioOff')}
+    </span>
+  </p>;
+
+  const renderSelfTile = (variant: TileVariant, viewer = false) => (
     <VideoTile
       key="self"
       peerId={room?.self.peerId ?? 'self'}
@@ -984,10 +1077,11 @@ export default function App() {
       //（VideoTile 内部对 self 直接静 video，不需要额外属性）
       hasAudio={hasAudio}
       variant={variant}
+      viewer={viewer}
     />
   );
 
-  const renderRemoteTile = (peer: PeerInfo, variant: TileVariant) => (
+  const renderRemoteTile = (peer: PeerInfo, variant: TileVariant, viewer = false) => (
     <VideoTile
       key={peer.peerId}
       peerId={peer.peerId}
@@ -1007,15 +1101,31 @@ export default function App() {
        */
       tracks={remoteTracks[peer.peerId] ?? null}
       hasAudio={peerHasAudio(peer.peerId)}
-      audioPref={peerAudioOf(peer.peerId)}
+      audioPref={viewer ? undefined : peerAudioOf(peer.peerId)}
       onAudioPref={(patch) => setPeerAudioOf(peer.peerId, patch)}
       volOpen={volPanelPeer === peer.peerId}
-      onToggleVolPanel={() => setVolPanelPeer((v) => (v === peer.peerId ? null : peer.peerId))}
+      onToggleVolPanel={viewer ? undefined : () => setVolPanelPeer((v) => (v === peer.peerId ? null : peer.peerId))}
       focused={focusedPeerId === peer.peerId}
-      onToggleFocus={() => toggleFocus(peer.peerId)}
+      onToggleFocus={viewer ? undefined : () => toggleFocus(peer.peerId)}
       variant={variant}
+      viewer={viewer}
     />
   );
+
+  const viewerParticipants: ShareViewerParticipant[] = isTauri ? remotePeers.map((peer) => {
+    const { voiceMuted, appMuted, voiceVol, appVol, shareReceptionPause } = peerAudioOf(peer.peerId);
+    return {
+      id: peer.peerId,
+      name: peer.nickname,
+      sharing: Boolean(remoteSharing[peer.peerId]),
+      pictureHidden: shareReceptionPause !== null,
+      shareAudioPaused: shareReceptionPause === 'picture-and-audio',
+      voiceMuted: globalMuted || voiceMuted,
+      shareAudioMuted: globalMuted || appMuted,
+      voiceVolume: voiceVol,
+      shareAudioVolume: appVol,
+    };
+  }) : [];
 
   /**
    * 浮窗模式下只摆**正在共享**的那几路。
@@ -1130,32 +1240,46 @@ export default function App() {
     });
   }, []);
 
-  /**
-   * 小窗上按了「静音这一路」。
-   *
-   * 小窗里**没有声音**（音轨同样过不去），它只是个开关 —— 真正切的是主窗口里
-   * 那个 `<video>.muted`。静音是**纯本机状态**、不发信令，这条与单窗口时一致。
-   */
+  /** 浮窗操作和主窗口使用同一份本机播放偏好。 */
   useEffect(() => {
     const api = window.gameShare?.floatTiles;
     if (!api) return undefined;
-    return api.onToggleMuteRequest((peerId) => toggleMute(peerId));
-  }, [toggleMute]);
+    if (!isTauri) return api.onToggleMuteRequest(toggleMute);
+    const stopShare = api.onToggleMuteRequest((peerId) => togglePeerChannel(peerId, 'share'));
+    const stopVoice = api.onToggleVoiceMuteRequest?.((peerId) => togglePeerChannel(peerId, 'voice'));
+    const stopPicture = api.onTogglePictureRequest?.(togglePeerPicture);
+    return () => {
+      stopShare();
+      stopVoice?.();
+      stopPicture?.();
+    };
+  }, [isTauri, toggleMute, togglePeerChannel, togglePeerPicture]);
 
-  useEffect(() => window.gameShare?.floatTiles.onVolumeRequest?.(({ peerId, volume }) => {
-    setPeerAudio((prev) => ({ ...prev, [peerId]: { ...(prev[peerId] ?? DEFAULT_PEER_AUDIO), masterVol: volume } }));
-  }), []);
+  useEffect(() => window.gameShare?.floatTiles.onVolumeRequest?.(({ peerId, volume, channel }) => {
+    const key = channel === 'voice' ? 'voiceVol' : channel === 'share' ? 'appVol' : 'masterVol';
+    setPeerAudioOf(peerId, { [key]: volume });
+  }), [setPeerAudioOf]);
 
   /** 要报给主进程的对端清单：顺序即位置，静音状态一起带上（小窗上的按钮照着它显示） */
   const tilePeersPayload = useCallback(
-    (): Array<{ peerId: string; name: string; muted: boolean; volume: number }> =>
-      floatPeers.map((peer) => ({
+    () => floatPeers.map((peer) => {
+      const pref = peerAudioOf(peer.peerId);
+      return {
         peerId: peer.peerId,
         name: peer.nickname,
-        muted: peerAudioOf(peer.peerId).masterMuted,
-        volume: peerAudioOf(peer.peerId).masterVol,
-      })),
-    [floatPeers, peerAudioOf],
+        muted: isTauri ? globalMuted || pref.appMuted : pref.masterMuted,
+        volume: pref.masterVol,
+        ...(isTauri && {
+          voiceMuted: globalMuted || pref.voiceMuted,
+          voiceVolume: pref.voiceVol,
+          shareVolume: pref.appVol,
+          globalMuted,
+          pictureHidden: pref.shareReceptionPause !== null,
+          shareAudioPaused: pref.shareReceptionPause === 'picture-and-audio',
+        }),
+      };
+    }),
+    [floatPeers, globalMuted, isTauri, peerAudioOf],
   );
 
   /**
@@ -1168,21 +1292,30 @@ export default function App() {
     if (!splitActive) return;
     const api = window.gameShare?.floatTiles;
     if (!api) return;
-    void api.syncPeers(inRoom ? tilePeersPayload() : []).then(setTiles)
-      .catch(error => session.pushLog(ShareSession.describeError(error)));
-  }, [splitActive, inRoom, tilePeersPayload, session]);
+    let current = true;
+    void api.syncPeers(inRoom ? tilePeersPayload() : []).then((status) => {
+      if (isTauri && !current) return;
+      setTiles(status);
+      if (isTauri) setViewError((error) => error === 'view.floatFailed' ? null : error);
+    })
+      .catch((error) => {
+        if (current && isTauri) setViewError('view.floatFailed');
+        session.pushLog(ShareSession.describeError(error));
+      });
+    return () => { current = false; };
+  }, [splitActive, inRoom, isTauri, tilePeersPayload, session]);
 
   useEffect(() => {
     const update = window.gameShare?.floatTiles.setVideoTracks;
     if (!update) return;
     const tracks = new Map<string, MediaStreamTrack>();
     for (const [peerId, stream] of Object.entries(remoteStreams)) {
-      if (!remoteSharing[peerId]) continue;
+      if (!remoteSharing[peerId] || shareReceptionPauses.has(peerId)) continue;
       const track = stream.getVideoTracks()[0];
       if (track) tracks.set(peerId, track);
     }
     update(tracks);
-  }, [remoteStreams, remoteSharing]);
+  }, [shareReceptionPauses, remoteStreams, remoteSharing]);
 
   // 浮窗只消费远端视频轨道，主窗口的播放元素不参与取帧。
   useEffect(() => {
@@ -1282,6 +1415,7 @@ export default function App() {
         prefOf={peerAudioOf}
         remoteSharing={remoteSharing}
         selfPeerId={room?.self.peerId}
+        globalMuted={globalMuted}
       />
       <header className="app__header">
         <div className="app__header-left">
@@ -1339,7 +1473,7 @@ export default function App() {
             </button>
           </div>
 
-          {floatWindow && <div className="header-actions header-actions--views">
+          {floatWindow && !isTauri && <div className="header-actions header-actions--views">
             {/* 浮窗模式：全屏游戏时用。快捷键在主进程里全局注册，这里只管显示状态。
                 多开客户端时快捷键只有一个窗口抢得到，抢不到就如实标出来 ——
                 否则用户按了没反应，只会以为是软件坏了。
@@ -1407,6 +1541,24 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {isTauri && (
+        <dialog id="local-share-preview" ref={localPreviewDialog} className="local-preview" aria-labelledby="local-preview-title"
+          onClose={(event) => { if (!event.currentTarget.open) setLocalPreviewOpen(false); }}>
+          <div className="local-preview__header">
+            <div className="local-preview__source">
+              <h2 id="local-preview-title">{t('share.localPreview')}</h2>
+              <p title={captureLabel ?? undefined}>{captureLabel ?? t('share.unknownSource')}</p>
+            </div>
+            <form method="dialog">
+              <button type="submit" className="btn">{t('win.close')}</button>
+            </form>
+          </div>
+          {localPreviewOpen && sharing && inRoom && (
+            <div className="local-preview__media">{renderSelfTile('thumb', true)}</div>
+          )}
+        </dialog>
+      )}
 
       <dialog ref={logDialog} className="log-dialog" aria-labelledby="log-dialog-title">
         <div className="log-dialog__header">
@@ -1534,15 +1686,19 @@ export default function App() {
 
             {sharing ? (
               <>
-                <p className="hint">
-                  {t('share.now')}
-                  {captureLabel ?? t('share.unknownSource')}
-                  <span className={appAudioEnabled ? 'tag tag--live' : 'tag'}>
-                    {appAudioEnabled
-                      ? t(isTauri && !audioMode ? 'audio.withSound' : AUDIO_MODE_LABEL[audioMode ?? 'none'] ?? 'audio.withSound')
-                      : t(isTauri || audioMode === 'none' ? 'audio.tag.none' : 'share.audioOff')}
-                  </span>
-                </p>
+                {isTauri ? (
+                  <div className="share-source__current">
+                    {currentShareSummary}
+                    <button type="button" className="btn btn--ghost" data-local-preview-toggle
+                      aria-haspopup="dialog" aria-controls="local-share-preview"
+                      onClick={() => {
+                        localPreviewDialog.current?.showModal();
+                        setLocalPreviewOpen(true);
+                      }}>
+                      {t('share.localPreview')}
+                    </button>
+                  </div>
+                ) : currentShareSummary}
 
                 {/* 音频采集失败 → 三选项显式处理，绝不静默降级也不自动换模式。
                     「继续无声」收起告警；换模式与停止走各自完整流程。 */}
@@ -1723,25 +1879,67 @@ export default function App() {
             收起成小球时换成 `ballDragProps`：同样是拖动，但多了一条「没动过就算点一下」
             （整块都是拖动区，没法在上面另挖一个按钮出来）。 */}
         <div
-          className={`app__stage${isFloat ? " stage--tiles" : ""}`}
+          className={`app__stage${!isTauri && isFloat ? ' stage--tiles' : ''}`}
           ref={stageRef}
           role="region"
           aria-label={t('stage.title')}
           onPointerMove={event => {
-            if (stageFullscreen && event.clientY - event.currentTarget.getBoundingClientRect().top <= 64) showFullscreenExit();
+            if (!isTauri && stageFullscreen && event.clientY - event.currentTarget.getBoundingClientRect().top <= 64) showFullscreenExit();
           }}
         >
-          {stageFullscreen && (
+          {!isTauri && stageFullscreen && (
             <button type="button" className={`stage__exit-fullscreen btn${fullscreenExitVisible ? '' : ' stage__exit-fullscreen--hidden'}`} onClick={() => void exitStageFullscreen()}>
               {t('view.exitFullscreen')} · Esc
             </button>
           )}
-          {isFloat && inRoom && <div className="tiles-control-notice">
+          {!isTauri && isFloat && inRoom && <div className="tiles-control-notice">
             <h2>{t('view.floatingActive')}</h2>
             <p>{fmt('view.floatingCount', { n: tiles?.tiles.length ?? 0 })}</p>
             <p className="hint">{t('view.floatingHint')}</p>
           </div>}
-          {!inRoom || (!isFloat && gridTileCount === 0) ? (
+          {isTauri && inRoom ? (
+            <ShareViewer
+              participants={viewerParticipants}
+              layout={viewerLayout}
+              focusedPeerId={activeViewerFocus}
+              floating={isFloat}
+              fullscreen={stageFullscreen}
+              busy={floatBusy || !floatWindow}
+              globalMuted={globalMuted}
+              floatingCount={tiles?.tiles.length ?? 0}
+              modeError={viewError ? t(viewError) : null}
+              opacity={floatWindow ? { value: floatWindow.opacity, min: floatWindow.minOpacity, onChange: (value) => void handleOpacity(value) } : undefined}
+              empty={
+                <div className="stage__empty">
+                  <div className="stage__empty-art" aria-hidden="true" />
+                  <h2>{t('stage.noRemoteShare')}</h2>
+                  <p>{t(sharing ? 'stage.localPreviewHint' : 'stage.noRemoteShareHint')}</p>
+                  {!stageFullscreen && (sideCollapsed || sidePage !== 'share') && (
+                    <button type="button" className="btn" onClick={() => openSidebarPage('share')}>{t('stage.openShare')}</button>
+                  )}
+                </div>
+              }
+              onLayoutChange={setViewerLayout}
+              onFocus={(peerId) => {
+                setViewerFocus(peerId);
+                setViewerLayout('focus');
+              }}
+              onToggleFloat={() => void handleToggleFloat(!isFloat)}
+              onToggleFullscreen={() => void handleMainView()}
+              onToggleGlobalMute={() => setGlobalMuted((muted) => !muted)}
+              onToggleVoice={(peerId) => togglePeerChannel(peerId, 'voice')}
+              onToggleShareAudio={(peerId) => togglePeerChannel(peerId, 'share')}
+              onTogglePicture={togglePeerPicture}
+              onVolumeChange={(peerId, channel, value) => {
+                const key = channel === 'voice' ? 'voiceVol' : 'appVol';
+                setPeerAudioOf(peerId, { [key]: value });
+              }}
+              renderMedia={(participant, variant) => {
+                const peer = remotePeers.find(({ peerId }) => peerId === participant.id);
+                return peer ? renderRemoteTile(peer, variant, true) : null;
+              }}
+            />
+          ) : !inRoom || (!isFloat && gridTileCount === 0) ? (
             <div className="stage__empty">
               <div className="stage__empty-art" aria-hidden="true" />
               <h2>{t(inRoom ? 'stage.noShare' : 'stage.title')}</h2>
@@ -1823,6 +2021,7 @@ interface VideoTileProps {
   focused?: boolean;
   onToggleFocus?: () => void;
   variant: TileVariant;
+  viewer?: boolean;
 }
 
 function VideoTile({
@@ -1844,6 +2043,7 @@ function VideoTile({
   focused,
   onToggleFocus,
   variant,
+  viewer,
 }: VideoTileProps) {
   const t = useI18n();
   const ref = useRef<HTMLVideoElement | null>(null);
@@ -1891,14 +2091,16 @@ function VideoTile({
   const noRoleAudio = voiceTrack === null && appAudioTrack === null;
   const bothMuted = Boolean(audioPref && (audioPref.masterMuted || (audioPref.voiceMuted && audioPref.appMuted)));
   useEffect(() => {
-    if (ref.current) ref.current.muted = self ? true : !noRoleAudio || bothMuted;
-  }, [self, noRoleAudio, bothMuted]);
+    if (ref.current) ref.current.muted = Boolean(viewer || self || !noRoleAudio || bothMuted);
+  }, [viewer, self, noRoleAudio, bothMuted]);
 
   // 等真正解出画面再撤掉占位层，否则会出现「显示已连接但一片黑」
   const markFrames = useCallback(() => setHasFrames(true), []);
 
   const inbound = stats?.inbound ?? null;
   const route = stats?.route ?? null;
+  const routeType = route?.relay ? 'TURN 中继' : '端点连接';
+  const routeAddresses = route && `本地：${route.localAddress ?? '未提供'} → 远端：${route.remoteAddress ?? '未提供'}（${route.protocol}）`;
   const compact = variant === 'thumb';
   const mediaExpected = Boolean(localMediaExpected || remoteSharing || (voiceTrack && !voiceTrack.muted) || (appAudioTrack && !appAudioTrack.muted));
 
@@ -1919,7 +2121,7 @@ function VideoTile({
         hidden={!playbackStream}
         autoPlay
         playsInline
-        muted={!noRoleAudio || bothMuted}
+        muted={Boolean(viewer || self || !noRoleAudio || bothMuted)}
         onLoadedData={markFrames}
         onPlaying={markFrames}
       />
@@ -1960,7 +2162,7 @@ function VideoTile({
         </div>
       )}
 
-      <div className="tile__header">
+      {!viewer && <div className="tile__header">
         <span className="tile__title">{title}</span>
         {/* 放大不能只留双击：窗口刚被激活时第一次点击会被系统吞掉，
             双击就变成了「点了没反应」。给一个看得见的按钮，
@@ -2056,7 +2258,7 @@ function VideoTile({
             {DIAG_SHORT[diagnosis.kind] ?? '!'}
           </span>
         )}
-      </div>
+      </div>}
 
       {!compact && (
         <div className="tile__footer">
@@ -2070,10 +2272,16 @@ function VideoTile({
               {hasAudio === false && <span className="tile__status">{t('tile.tagNoAudio')}</span>}
             </>}
           </div>
-          {!self && route && <details className="hint tile__route-details">
-            <summary>音视频实际路径：{route.relay ? 'TURN 中继' : '端点连接'}</summary>
-            <span>本地：{route.localAddress ?? '未提供'} → 远端：{route.remoteAddress ?? '未提供'}（{route.protocol}）</span>
-          </details>}
+          {!self && route && (viewer ? (
+            <div className="hint tile__route-details">
+              <span className={route.relay ? 'tile__route--relay' : undefined}>{routeType}</span>{' · '}{routeAddresses}
+            </div>
+          ) : (
+            <details className="hint tile__route-details">
+              <summary>音视频实际路径：{routeType}</summary>
+              <span>{routeAddresses}</span>
+            </details>
+          ))}
           <div className="tile__metrics">
           {self ? (
             <span className="hint hint--dim">{t('tile.localPreviewInfo')}</span>
@@ -2136,6 +2344,7 @@ function RemoteAudioOutlet({
   prefOf,
   remoteSharing,
   selfPeerId,
+  globalMuted,
 }: {
   /** 房间里的远端成员（不含自己） */
   peers: readonly PeerInfo[];
@@ -2147,6 +2356,7 @@ function RemoteAudioOutlet({
   remoteSharing: Record<string, boolean>;
   /** 自己的 peerId */
   selfPeerId: string | undefined;
+  globalMuted: boolean;
 }) {
   /**
    * 「该给谁放声音」交给纯函数判据（`packages/shared/src/voice-audience.ts`），
@@ -2167,8 +2377,10 @@ function RemoteAudioOutlet({
       {audience.map((peerId) => (
         <RemoteAudioPair
           key={peerId}
+          peerId={peerId}
           tracks={tracks[peerId] ?? null}
           pref={prefOf(peerId)}
+          globalMuted={globalMuted}
         />
       ))}
     </>
@@ -2182,11 +2394,15 @@ function RemoteAudioOutlet({
  * React 按 key 复用同一个实例，`<audio>` 元素因此不会被拆掉重建。
  */
 function RemoteAudioPair({
+  peerId,
   tracks,
   pref,
+  globalMuted,
 }: {
+  peerId: string;
   tracks: RemoteTracks | null;
   pref: PeerAudioPref;
+  globalMuted: boolean;
 }) {
   const voiceRef = useRef<HTMLAudioElement | null>(null);
   const appAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -2208,22 +2424,22 @@ function RemoteAudioPair({
    */
   useEffect(() => {
     const pairs: Array<[HTMLAudioElement | null, MediaStream | null, boolean, number]> = [
-      [voiceRef.current, voiceStream, pref.masterMuted || pref.voiceMuted, pref.voiceVol * pref.masterVol],
-      [appAudioRef.current, appAudioStream, pref.masterMuted || pref.appMuted, pref.appVol * pref.masterVol],
+      [voiceRef.current, voiceStream, globalMuted || pref.masterMuted || pref.voiceMuted, pref.voiceVol * pref.masterVol],
+      [appAudioRef.current, appAudioStream, pref.shareReceptionPause === 'picture-and-audio' || globalMuted || pref.masterMuted || pref.appMuted, pref.appVol * pref.masterVol],
     ];
     for (const [el, nextStream, muted, volume] of pairs) {
       if (!el) continue;
-      if (el.srcObject !== nextStream) el.srcObject = nextStream;
       el.muted = muted;
       el.volume = volume;
+      if (el.srcObject !== nextStream) el.srcObject = nextStream;
       if (nextStream) void el.play().catch(() => undefined);
     }
-  }, [voiceStream, appAudioStream, pref]);
+  }, [voiceStream, appAudioStream, pref, globalMuted]);
 
   return (
     <>
-      {voiceStream && <audio ref={voiceRef} autoPlay playsInline />}
-      {appAudioStream && <audio ref={appAudioRef} autoPlay playsInline />}
+      {voiceStream && <audio ref={voiceRef} data-audio-peer={peerId} data-audio-role="voice" autoPlay playsInline />}
+      {appAudioStream && <audio ref={appAudioRef} data-audio-peer={peerId} data-audio-role="share" autoPlay playsInline />}
     </>
   );
 }

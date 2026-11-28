@@ -1,0 +1,147 @@
+html:has(.tilewin--tauri) body,
+.tilewin.tilewin--tauri {
+  background: transparent;
+}
+
+.tilewin--tauri .tilewin__video[hidden] {
+  display: none;
+}
+
+.tilewin--tauri .tilewin__wait {
+  background: var(--bg);
+  padding: 32px 8px 52px;
+  text-align: center;
+}
+
+.tilewin--tauri .tilewin__wait--hidden {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.tilewin--tauri .tilewin__bar {
+  display: contents;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tilewin--tauri :is(.tilewin__header, .tilewin__settings, .tilewin__grip) {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.tilewin--tauri:is(:hover, :has(:focus-visible, .hover-volume__panel:popover-open)) :is(.tilewin__header, .tilewin__settings, .tilewin__grip) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tilewin--tauri .hover-volume__panel:popover-open { pointer-events: auto; }
+
+@media (any-hover: none) {
+  .tilewin--tauri :is(.tilewin__header, .tilewin__settings, .tilewin__grip) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tilewin--tauri :is(.tilewin__header, .tilewin__settings, .tilewin__grip) { transition: none; }
+}
+
+.tilewin__header,
+.tilewin__settings {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+}
+
+.tilewin__header {
+  top: 6px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tilewin--tauri .tilewin__name {
+  position: static;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.tilewin__actions {
+  display: flex;
+  gap: 4px;
+}
+
+.tilewin--tauri .tilewin__action {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.tilewin--tauri .tilewin__action[aria-pressed='true'] {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.tilewin--tauri .tilewin__action:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.tilewin--tauri .tilewin__action:hover:not(:disabled) {
+  background: var(--bg-panel);
+  border-color: var(--accent);
+}
+
+.tilewin--tauri :is(button, input):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tilewin__settings {
+  right: 19px;
+  bottom: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 180px);
+  cursor: default;
+}
+
+.tilewin__slider {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 4ch;
+  align-items: center;
+  min-height: 28px;
+  gap: 4px;
+  padding: 0 6px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tilewin__slider input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.tilewin__slider > span:last-child {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}

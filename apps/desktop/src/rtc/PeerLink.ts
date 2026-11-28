@@ -24,6 +24,7 @@ import {
   type LocalTracks,
   type PeerSignaling,
   type RemoteTracks,
+  type ShareReceptionPause,
 } from './types';
 
 /**
@@ -43,8 +44,8 @@ import {
  *      两边都建会出多条 m-line，直接报 m-line 顺序不匹配。
  *   2. 每次 SDP 落地后都以「真正绑定了 m-line 的那条 transceiver」为准
  *      （#pickBoundTransceiver），而不是我们手里那条对象引用。
- *   3. 方向永远写 sendrecv，不随「是否正在共享」来回切。
- *      开关任何一条轨都只用 replaceTrack(null) 表达，因此协商只发生一次。
+ *   3. 开关本地共享或麦克风只换轨。观看者暂停某一路共享媒体的接收时，
+ *      对应通道改为 sendonly，语音继续双向，恢复时重新允许接收。
  *
  * --- 关于三条轨 ---
  *
@@ -263,6 +264,8 @@ export class PeerLink {
   #log: (line: string) => void;
 
   #makingOffer = false;
+  #incomingSharePause: ShareReceptionPause | null = null;
+  #incomingShareChanged = false;
   #ignoreOffer = false;
   #settingRemoteAnswer = false;
   #remoteDescriptionSet = false;
@@ -395,9 +398,8 @@ export class PeerLink {
   #bind(): void {
     this.pc.onnegotiationneeded = () => {
       if (this.#closed) return;
-      // m-line 由主动方独占创建，所以也只有主动方发起协商。
-      // 被动方需要发送时不需要重新协商 —— m-line 本来就是双向的。
-      if (!this.#initiator) return;
+      // Only the initiator creates m-lines. Once bound, either viewer can change receive direction.
+      if (!this.#initiator && (!this.#incomingShareChanged || !this.pc.remoteDescription)) return;
       // 已在协商中途就不再插一脚，否则会多发一份多余的 offer/answer
       if (this.pc.signalingState !== 'stable') return;
       void this.#negotiate();
@@ -946,20 +948,28 @@ export class PeerLink {
     return current && !isStopped(current) ? current : null;
   }
 
-  /**
-   * 把方向对齐到「双向」。
-   *
-   * 刻意始终写 sendrecv：方向一旦从 recvonly 变成 sendrecv 就会触发重协商，
-   * 而「开始/停止共享」「开/关麦」「开/关应用声音」都只靠 replaceTrack(null)
-   * 表达即可，不必再谈一轮。
-   */
+  /** Pause reception on the existing m-lines, preserving our outbound share and both voice directions. */
+  setIncomingSharePause(pause: ShareReceptionPause | null): void {
+    if (this.#closed || this.#incomingSharePause === pause) return;
+    this.#incomingSharePause = pause;
+    this.#incomingShareChanged = true;
+    this.#syncDirection('video');
+    this.#syncDirection('appAudio');
+  }
+
+  #isIncomingRolePaused(role: TrackRole): boolean {
+    return role === 'video' ? this.#incomingSharePause !== null
+      : role === 'appAudio' && this.#incomingSharePause === 'picture-and-audio';
+  }
+
   #syncDirection(role: TrackRole): void {
     const transceiver = this.#transceivers.get(role);
     if (!transceiver || isStopped(transceiver)) return;
-    if (transceiver.direction === 'sendrecv') return;
+    const direction = this.#isIncomingRolePaused(role) ? 'sendonly' : 'sendrecv';
+    if (transceiver.direction === direction) return;
     try {
-      transceiver.direction = 'sendrecv';
-      this.#log(`方向意图 ${this.remotePeerId} ${role} ← sendrecv`);
+      transceiver.direction = direction;
+      this.#log(`方向意图 ${this.remotePeerId} ${role} ← ${direction}`);
     } catch (err) {
       this.#fail(err);
     }
@@ -1022,9 +1032,9 @@ export class PeerLink {
       // 必须等挂轨结果落定再生成 offer / answer，
       // 否则会协商出与真实意图不符的方向（见文件头注释）。
       await this.#pendingTrackApply;
-      if (this.#closed) return;
+      if (this.#closed || this.#makingOffer || this.pc.signalingState !== 'stable') return;
 
-      this.#syncDirection('video');
+      for (const role of TRACK_ROLES) this.#syncDirection(role);
       this.#makingOffer = true;
       await this.pc.setLocalDescription();
       if (this.#closed) return;
@@ -1170,7 +1180,7 @@ export class PeerLink {
    * 就重新协商一轮。次数有上限，避免来回打转。
    */
   #repairDirectionIfOneWay(): void {
-    if (this.#closed) return;
+    if (this.#closed || this.pc.signalingState !== 'stable') return;
     // 只有主动方能重新发起协商，被动方交给主动方修
     if (!this.#initiator) return;
     if (this.#directionRepairAttempts >= MAX_DIRECTION_REPAIRS) return;
@@ -1181,6 +1191,13 @@ export class PeerLink {
       const t = this.#transceivers.get(role);
       if (!t || isStopped(t)) return false;
       const current = t.currentDirection;
+      if (this.#isIncomingRolePaused(role)) return false;
+      if (role !== 'voice') {
+        const remoteSdp = this.pc.remoteDescription?.sdp;
+        const section = remoteSdp?.split(/\r?\n(?=m=)/).find((media) =>
+          media.split(/\r?\n/).includes(`a=mid:${t.mid}`));
+        if (section && /^a=(sendonly|inactive)\r?$/m.test(section)) return false;
+      }
       return current !== null && current !== 'sendrecv';
     });
     if (broken.length === 0) return;
