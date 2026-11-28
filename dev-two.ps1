@@ -10,13 +10,19 @@ $first = Start-Job -ArgumentList $repo, $profiles, $target -ScriptBlock {
     Set-Location $root
     $env:CARGO_TARGET_DIR = $target
     $env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $profiles 'client-1'
-    npm.cmd run dev:desktop -- --no-watch
+    # Windows PowerShell forwards native stderr through the job's error stream.
+    npm.cmd run dev:desktop -- --no-watch 2>&1 | ForEach-Object { $_.ToString() }
+    if ($LASTEXITCODE -ne 0) {
+        throw "Tauri development command exited with code $LASTEXITCODE."
+    }
 }
 $previousProfile = $env:WEBVIEW2_USER_DATA_FOLDER
 try {
     while ($true) {
         Receive-Job $first
-        if ($first.State -ne 'Running') { throw 'Tauri development startup exited.' }
+        if ($first.State -in 'Completed', 'Failed', 'Stopped') {
+            throw 'Tauri development startup exited before the first client appeared.'
+        }
         $client = Get-Process -Name gameshare-tauri -ErrorAction SilentlyContinue |
             Where-Object { $_.Path -eq $exe -and $_.Id -notin $existing } |
             Select-Object -First 1
