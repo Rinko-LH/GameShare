@@ -16,10 +16,12 @@ import type { LinkStats, RemoteTracks, ShareReceptionPause } from './rtc/types';
 import { formatBitrate } from './rtc/stats';
 import type { LinkDiagnosis } from './rtc/PeerLink';
 import { startFloatTilePump } from './media/float-tile-pump';
+import { useSpeakingPeers } from './media/useSpeakingPeers';
 import { ShareSession } from './session/ShareSession';
 import { ConnectionPanel } from './ConnectionPanel';
 import { ApplicationAudioPicker } from './ApplicationAudioPicker';
 import { ShareViewer, type ShareViewerParticipant } from './ShareViewer';
+import { SpeakingMark } from './SpeakingPlayers';
 import { VoicePanel, useVoiceHotkey } from './VoicePanel';
 import { readVoicePreferences } from './voice-settings';
 import { DEFAULT_CONNECTION_CONFIG, readConnectionConfig, saveConnectionConfig, type ConnectionConfig } from './connection-config';
@@ -336,6 +338,7 @@ export default function App() {
     audioMode,
     audioFailure,
     micEnabled,
+    micTransmitting,
   } = state;
   const connected = connection.state === 'connected';
   const inRoom = room !== null;
@@ -872,6 +875,28 @@ export default function App() {
 
   const members: PeerInfo[] = room ? [room.self, ...room.peers] : [];
   const remotePeers = useMemo(() => (room ? room.peers : []), [room]);
+  const localVoice = micTransmitting ? session.mic.track : null;
+  const voiceTracks = useMemo(() => {
+    const tracks = new Map<string, MediaStreamTrack>();
+    if (!isTauri || !room) return tracks;
+    if (localVoice) tracks.set(room.self.peerId, localVoice);
+    for (const { peerId } of room.peers) {
+      const voice = remoteTracks[peerId]?.voice;
+      if (voice) tracks.set(peerId, voice);
+    }
+    return tracks;
+  }, [isTauri, room, localVoice, remoteTracks]);
+  const speakingPeerIds = useSpeakingPeers(isTauri ? room?.roomCode : undefined, voiceTracks);
+  const speakingPlayers = useMemo(() => {
+    if (!room) return [];
+    return [room.self, ...room.peers]
+      .filter(({ peerId }) => speakingPeerIds.has(peerId) && voiceTracks.has(peerId))
+      .map(({ peerId, nickname }) => ({ id: peerId, name: nickname }));
+  }, [room, speakingPeerIds, voiceTracks]);
+  useEffect(() => {
+    window.gameShare?.floatTiles.setSpeakingPlayers?.(speakingPlayers);
+  }, [speakingPlayers]);
+  const speakingIds = new Set(speakingPlayers.map(({ id }) => id));
   // 按实际渲染的画面数量排网格；不足一行的格子留空。
   const gridTileCount = remotePeers.length + (sharing ? 1 : 0);
   const gridColumns = Math.max(1, Math.ceil(Math.sqrt(gridTileCount)));
@@ -1126,6 +1151,7 @@ export default function App() {
       id: peer.peerId,
       name: peer.nickname,
       sharing: Boolean(remoteSharing[peer.peerId]),
+      speaking: speakingIds.has(peer.peerId),
       pictureHidden: shareReceptionPause !== null,
       shareAudioPaused: shareReceptionPause === 'picture-and-audio',
       voiceMuted,
@@ -1657,6 +1683,7 @@ export default function App() {
                 return (
                   <li key={peer.peerId} className="member">
                     <span className="member__name">
+                      {isTauri && <SpeakingMark active={speakingIds.has(peer.peerId)} />}
                       {peer.nickname}
                       {isSelf && <span className="member__self">{t('room.memberSelf')}</span>}
                     </span>

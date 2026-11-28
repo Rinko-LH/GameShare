@@ -163,6 +163,9 @@ const decodedShares = (evaluate) => evaluate(`[...document.querySelectorAll('${v
 const audioSelector = (peerId, role) => `audio[data-audio-peer="${peerId}"][data-audio-role="${role}"]`;
 const audioMuted = (evaluate, peerId, role) => evaluate(`${query(audioSelector(peerId, role))}?.muted`);
 const audioVolume = (evaluate, peerId, role) => evaluate(`${query(audioSelector(peerId, role))}?.volume`);
+const floatSpeakingName = (evaluate) => evaluate(`${query('.tilewin__speakers')}?.textContent.trim() ?? ''`);
+const peerSpeaking = (evaluate, peer) => evaluate(`Boolean(${query(`${peer} .speaking-mark[data-active="true"]`)})`);
+const setMicGain = (evaluate, value) => evaluate(`window.__viewerTestMic.gain.gain.value = ${value}`);
 const setSyntheticMic = (evaluate) => evaluate(`(() => {
   navigator.mediaDevices.getUserMedia = async () => {
     const context = new AudioContext();
@@ -173,7 +176,7 @@ const setSyntheticMic = (evaluate) => evaluate(`(() => {
     gain.gain.value = 0.002;
     tone.connect(gain).connect(destination);
     tone.start();
-    window.__viewerTestMic = { context, tone, track: destination.stream.getAudioTracks()[0] };
+    window.__viewerTestMic = { context, tone, gain, track: destination.stream.getAudioTracks()[0] };
     return destination.stream;
   };
 })()`);
@@ -336,10 +339,17 @@ try {
       await click(guest.evaluate, '[data-voice-enable]');
       await until(() => guest.evaluate('window.__viewerTestMic?.track.enabled && document.querySelector("[data-mic-enabled=true]") !== null'), 'voice-only member transmits');
       await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === false, 'new member voice is audible');
+      assert.equal(await peerSpeaking(hostEval, secondPeer), false, 'An open but quiet microphone does not show a speaker');
+      await setMicGain(guest.evaluate, 0.075);
+      await until(() => peerSpeaking(hostEval, secondPeer), 'a voice-only member is identified in the roster');
+      await until(() => peerSpeaking(guest.evaluate, '.member__name:has(.member__self)'), 'the sender’s room entry identifies their speaking status');
       await click(hostEval, `${secondPeer} ${control('voice')}`);
       await until(() => audioMuted(hostEval, secondPeerId, 'voice'), 'voice-only member can be locally muted');
+      assert.equal(await peerSpeaking(hostEval, secondPeer), true, 'Local playback mute preserves incoming activity');
       await click(hostEval, `${secondPeer} ${control('voice')}`);
       await until(async () => await audioMuted(hostEval, secondPeerId, 'voice') === false, 'voice-only member can be locally unmuted');
+      await setMicGain(guest.evaluate, 0.002);
+      await until(async () => !await peerSpeaking(hostEval, secondPeer), 'the speaking indicator clears after silence');
       assert.equal(await hostEval(`${query(secondPeer)}.querySelectorAll('button').length`), 2, 'Voice-only member has only mic and speaker buttons');
       assert.equal(await hostEval(`Boolean(${query(openVolume('voice'))})`), false, 'Volume controls start hidden');
       await hover(hostEval, `${secondPeer} ${control('voice')}`);
@@ -546,6 +556,9 @@ try {
     }, 'three independent Tauri float windows');
     return Promise.all(windows.map(attach));
   };
+  await setMicGain(guests[1].evaluate, 0.075);
+  await until(() => peerSpeaking(hostEval, `${secondPeer} .share-viewer__card-chrome`), 'the sharing speaker is identified in the card title');
+  assert.equal(await hostEval(`Boolean(${query('[data-speaking-players]')})`), false, 'The main viewer does not show a second speaker badge over the picture');
   let tiles = await openFloats();
   if (!captureTitle) await until(() => firstSenderHasThumbnailLinks(0), 'independent floats restore sender quality');
   const sample = (tile) => tile(`(() => {
@@ -572,6 +585,9 @@ try {
     })`);
   await leaveFloat();
   await until(() => floatControlsVisible(false), 'float controls start hidden with pointer outside');
+  await until(async () => (await Promise.all(tiles.map(floatSpeakingName)))
+    .every((name, index) => name === (before[index].name === 'Guest 2' ? 'Guest 2' : '')),
+    'only the speaker’s float shows their name with controls hidden');
   await secondTile.send('Page.bringToFront');
   await pressKey(secondTile, 'Tab', 9);
   await until(() => floatControlsVisible(true), 'keyboard focus reveals float controls');
@@ -649,8 +665,22 @@ try {
   await until(() => guests[0].evaluate(`!${query('#local-share-preview[open]')} && !${query(previewToggle)}`),
     'ending the share closes the preview and removes its entry');
   await until(async () => (await host.list()).filter((entry) => entry.url.includes('floatTile=')).length === 2, 'stopping share removed only the matching float window');
-  const remaining = (await host.list()).find((entry) => entry.url.includes('floatTile='));
-  const float = await attach(remaining);
+  const liveFloats = await Promise.all((await floatWindows()).map(attach));
+  const floatNames = (await Promise.all(liveFloats.map(sample))).map((tile) => tile.name);
+  const float = liveFloats[0];
+  await setSyntheticMic(guests[0].evaluate);
+  await click(guests[0].evaluate, '[data-voice-mode="continuous"]');
+  await click(guests[0].evaluate, '[data-voice-enable]');
+  await until(() => guests[0].evaluate('window.__viewerTestMic?.track.enabled'), 'the participant without a float transmits voice');
+  await setMicGain(guests[0].evaluate, 0.075);
+  await until(() => hostEval(`[...document.querySelectorAll('[data-viewer-peer][data-speaking=true]')].some(element => element.textContent.includes('Guest 1'))`),
+    'the room detects the voice-only member speaking');
+  assert.deepEqual(await Promise.all(liveFloats.map(floatSpeakingName)), floatNames.map((name) => name === 'Guest 2' ? name : ''),
+    'a voice-only member is never shown on other members’ floats');
+  await setMicGain(guests[1].evaluate, 0);
+  await until(async () => (await Promise.all(liveFloats.map(floatSpeakingName))).every((name) => name === ''),
+    'floats clear activity when their own members stop speaking');
+  await setMicGain(guests[0].evaluate, 0);
   await float('document.querySelector(\'.tilewin__bar button[aria-label="关闭"]\').click()');
   await until(async () => (await host.list()).filter((entry) => entry.url.includes('floatTile=')).length === 1, 'close button removed only its own float window');
   await hostEval(`window.gameShare.floatTiles.onStatus(status => { window.__viewerTestFloatStatus = status; });`);

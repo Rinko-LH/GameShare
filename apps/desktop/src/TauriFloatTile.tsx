@@ -5,15 +5,17 @@ import {
   localTileDescription, MIN_FLOAT_OPACITY, readFloatOpacity, sendTileSignal, watchFloatOpacity, writeFloatOpacity,
   type TileSignal,
 } from './tauri-tiles';
-import type { FloatTilePeer } from './types/global';
+import type { FloatTilePeer, SpeakingPlayer } from './types/global';
 import { ViewerIcon } from './ViewerIcon';
 import { HoverVolume, type VolumeChannel } from './HoverVolume';
+import { SpeakingPlayers } from './SpeakingPlayers';
 import './tauri-float-tile.css';
 
 export default function TauriFloatTile({ label }: { label: string }) {
   const t = useI18n();
   const video = useRef<HTMLVideoElement>(null);
   const [peerState, setPeerState] = useState<FloatTilePeer | null>(null);
+  const [speakingPlayers, setSpeakingPlayers] = useState<readonly SpeakingPlayer[]>([]);
   const [opacity, setOpacity] = useState(readFloatOpacity);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState('');
@@ -23,6 +25,7 @@ export default function TauriFloatTile({ label }: { label: string }) {
     const player = video.current!;
     const peer = new RTCPeerConnection({ iceServers: [] });
     let disposed = false;
+    let speakingRevision = -1;
     let unlisten: (() => void) | undefined;
     const onError = (reason: unknown) => { if (!disposed) setError(String(reason)); };
     peer.ontrack = ({ track }) => {
@@ -34,6 +37,10 @@ export default function TauriFloatTile({ label }: { label: string }) {
     };
 
     async function handle(message: TileSignal) {
+      if (message.kind === 'speaking' && message.revision > speakingRevision) {
+        speakingRevision = message.revision;
+        setSpeakingPlayers(message.players);
+      }
       if (message.kind === 'peer' || message.kind === 'offer') {
         setPeerState(message.peer);
       }
@@ -85,6 +92,7 @@ export default function TauriFloatTile({ label }: { label: string }) {
     {(pictureHidden || !playing || error) && <div className={`tilewin__wait${pictureHidden ? ' tilewin__wait--hidden' : ''}`}>
       <span>{pictureHidden ? t(sharePaused ? 'view.pictureAndAudioPaused' : 'view.pictureHidden') : error || t('tileFloat.waiting')}</span>
     </div>}
+    <SpeakingPlayers players={speakingPlayers.filter(({ id }) => id === peerState?.peerId)} className="tilewin__speakers" />
     <div className="tilewin__bar">
       <div className="tilewin__header">
         <span className="tilewin__name" title={name}>{name}</span>

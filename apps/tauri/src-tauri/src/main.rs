@@ -108,7 +108,7 @@ fn tile_signal(window: WebviewWindow, label: String, message: Value) -> Result<(
     }
     let kind = message["kind"].as_str().unwrap_or("");
     let destination = match (window.label(), kind) {
-        ("main", "offer" | "peer") => label.as_str(),
+        ("main", "offer" | "peer" | "speaking") => label.as_str(),
         (sender, "ready" | "answer" | "mute" | "mute-voice" | "toggle-picture" | "volume")
             if sender == label =>
         {

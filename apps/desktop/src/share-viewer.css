@@ -198,6 +198,11 @@
   white-space: nowrap;
 }
 
+.share-viewer [data-speaking="true"] > .share-viewer__name,
+.share-viewer [data-speaking="true"] > .share-viewer__card-chrome > .share-viewer__name {
+  color: var(--ok);
+}
+
 .share-viewer__icon-button {
   width: 31px;
   min-height: 32px;

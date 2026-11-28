@@ -18,6 +18,15 @@ html:has(.tilewin--tauri) body,
   color: var(--text);
 }
 
+.tilewin__speakers {
+  position: absolute;
+  inset-inline-start: 6px;
+  inset-block-end: 40px;
+  max-inline-size: calc(100% - 12px);
+  max-block-size: calc(100% - 82px);
+  overflow: auto;
+}
+
 .tilewin--tauri .tilewin__bar {
   display: contents;
   opacity: 1;

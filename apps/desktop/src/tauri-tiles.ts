@@ -1,5 +1,5 @@
 import { listenNative, native } from './tauri-native';
-import type { FloatTilePeer, FloatTilesStatus, FloatWindowStatus, GameShareApi } from './types/global';
+import type { FloatTilePeer, FloatTilesStatus, FloatWindowStatus, GameShareApi, SpeakingPlayer } from './types/global';
 
 const FLOAT_OPACITY_KEY = 'gs.tauri.floatOpacity';
 export const MIN_FLOAT_OPACITY = 0.25;
@@ -33,6 +33,7 @@ export type TileSignal =
   | { kind: 'offer'; description: RTCSessionDescriptionInit; peer: FloatTilePeer }
   | { kind: 'answer'; description: RTCSessionDescriptionInit }
   | { kind: 'peer'; peer: FloatTilePeer }
+  | { kind: 'speaking'; revision: number; players: readonly SpeakingPlayer[] }
   | { kind: 'volume'; volume: number; channel: 'voice' | 'share' };
 interface Tile {
   label: string;
@@ -90,6 +91,7 @@ export class TauriTiles {
   private desired = new Map<string, FloatTilePeer>();
   private dismissed = new Set<string>();
   private tracks = new Map<string, MediaStreamTrack>();
+  private speaking: Extract<TileSignal, { kind: 'speaking' }> = { kind: 'speaking', revision: 0, players: [] };
   private windows = new Listeners<FloatWindowStatus>();
   private statuses = new Listeners<FloatTilesStatus>();
   private mute = new Listeners<string>();
@@ -200,6 +202,13 @@ export class TauriTiles {
     }
   }
 
+  private sendSpeaking(tile: Tile): void {
+    if (!tile.connection || tile.closing) return;
+    void sendTileSignal(tile.label, this.speaking).catch((error) => {
+      if (!tile.closing && this.tiles.has(tile.label)) console.error('浮窗说话状态同步失败', error);
+    });
+  }
+
   private async onSignal(label: string, message: TileSignal): Promise<void> {
     const tile = this.tiles.get(label);
     if (!tile) return;
@@ -213,6 +222,7 @@ export class TauriTiles {
       tile.connection?.close();
       const connection = new RTCPeerConnection({ iceServers: [] });
       tile.connection = connection;
+      this.sendSpeaking(tile);
       const transceiver = connection.addTransceiver('video', { direction: 'sendonly' });
       tile.sender = transceiver.sender;
       if (tile.track) await tile.sender.replaceTrack(tile.track);
@@ -265,5 +275,9 @@ export class TauriTiles {
     onTogglePictureRequest: this.togglePicture.subscribe,
     onVolumeRequest: this.volume.subscribe,
     setVideoTracks: (tracks) => this.updateTracks(tracks),
+    setSpeakingPlayers: (players) => {
+      this.speaking = { kind: 'speaking', revision: this.speaking.revision + 1, players };
+      for (const tile of this.tiles.values()) this.sendSpeaking(tile);
+    },
   };
 }

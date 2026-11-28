@@ -1,12 +1,13 @@
 import type { ReactNode } from 'react';
 
-type ViewerIconName = 'voice' | 'speaker' | 'picture' | 'focus' | 'grid' | 'floating' | 'fullscreen';
+type ViewerIconName = 'voice' | 'speaking' | 'speaker' | 'picture' | 'focus' | 'grid' | 'floating' | 'fullscreen';
 
 const shapes: Record<ViewerIconName, ReactNode> = {
   voice: <>
     <rect x="6" y="1.75" width="4" height="8" rx="2" />
     <path d="M3.5 7.75v.5a4.5 4.5 0 0 0 9 0v-.5M8 12.75v1.5m-2 0h4" />
   </>,
+  speaking: <path d="M2 7v2m3-4v6m3-9v12m3-9v6m3-4v2" />,
   speaker: <path d="M6 5 9.5 2.5v11L6 11H3V5Zm6 1a3.25 3.25 0 0 1 0 4m1.5-5.5a5.5 5.5 0 0 1 0 7" />,
   picture: <path d="M1.75 3.25h12.5v8H1.75zM8 11.25v2m-3 0h6" />,
   focus: <>

@@ -1,0 +1,26 @@
+.speaking-mark {
+  display: inline-flex;
+  flex: none;
+  vertical-align: middle;
+  color: var(--ok);
+  margin-inline-end: 4px;
+}
+
+.speaking-mark[data-active="false"] { visibility: hidden; }
+
+.speaking-players {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.speaking-players > .speaking-mark { margin-inline-end: 0; }
+
+.speaking-players__names { min-width: 0; overflow-wrap: anywhere; }

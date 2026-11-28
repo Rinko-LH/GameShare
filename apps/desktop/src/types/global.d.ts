@@ -207,6 +207,11 @@ export interface FloatTilesStatus {
   tiles: FloatTileInfo[];
 }
 
+export interface SpeakingPlayer {
+  id: string;
+  name: string;
+}
+
 export interface FloatTilePeer {
   peerId: string;
   name: string;
@@ -371,6 +376,7 @@ export interface GameShareApi {
      * 不带的话小窗会一直写着「有声」，点一下反而会放开用户已经静音的那一路。
      */
     syncPeers(peers: FloatTilePeer[]): Promise<FloatTilesStatus>;
+    setSpeakingPlayers?(players: readonly SpeakingPlayer[]): void;
     onStatus(callback: (status: FloatTilesStatus) => void): () => void;
     /** meta 里带序号与对端身份（`peerId` / `name`，换人后是新值） */
     onTilePort(

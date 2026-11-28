@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { fmt, useI18n } from './i18n';
 import { HoverVolume, type VolumeChannel } from './HoverVolume';
+import { SpeakingMark } from './SpeakingPlayers';
 import { ViewerIcon } from './ViewerIcon';
 import './share-viewer.css';
 
@@ -11,6 +12,7 @@ export interface ShareViewerParticipant {
   id: string;
   name: string;
   sharing: boolean;
+  speaking: boolean;
   pictureHidden?: boolean;
   shareAudioPaused?: boolean;
   voiceMuted?: boolean;
@@ -83,10 +85,13 @@ export function ShareViewer({
         tabIndex={focused ? -1 : undefined}
         data-viewer-peer={peer.id}
         data-focused={focused}
+        data-speaking={peer.speaking}
         aria-label={peer.name}
       >
         <div className="share-viewer__card-chrome">
-          <span className="share-viewer__name" title={peer.name}>{peer.name}</span>
+          <span className="share-viewer__name" title={peer.name}>
+            <SpeakingMark active={peer.speaking} />{peer.name}
+          </span>
           <div className="share-viewer__card-actions">
             {audioControls(peer)}
           </div>
@@ -183,8 +188,10 @@ export function ShareViewer({
           <h2>{t('view.participants')}</h2>
           <ul>
             {roster.map((peer) => (
-              <li key={peer.id} data-viewer-peer={peer.id}>
-                <span className="share-viewer__name" title={peer.name}>{peer.name}</span>
+              <li key={peer.id} data-viewer-peer={peer.id} data-speaking={peer.speaking}>
+                <span className="share-viewer__name" title={peer.name}>
+                  <SpeakingMark active={peer.speaking} />{peer.name}
+                </span>
                 {audioControls(peer)}
               </li>
             ))}
