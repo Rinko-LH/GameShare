@@ -22,6 +22,7 @@ export interface ShareViewerParticipant {
 interface ShareViewerProps {
   participants: ShareViewerParticipant[];
   layout: Layout;
+  showStats: boolean;
   focusedPeerId: string | null;
   floating: boolean;
   fullscreen: boolean;
@@ -31,6 +32,7 @@ interface ShareViewerProps {
   opacity?: { value: number; min: number; onChange: (value: number) => void };
   empty: ReactNode;
   onLayoutChange: (layout: Layout) => void;
+  onToggleStats: () => void;
   onFocus: (peerId: string) => void;
   onToggleFloat: () => void;
   onToggleFullscreen: () => void;
@@ -42,8 +44,8 @@ interface ShareViewerProps {
 }
 
 export function ShareViewer({
-  participants, layout, focusedPeerId, floating, fullscreen, busy, floatingCount, modeError, opacity, empty,
-  onLayoutChange, onFocus, onToggleFloat, onToggleFullscreen,
+  participants, layout, showStats, focusedPeerId, floating, fullscreen, busy, floatingCount, modeError, opacity, empty,
+  onLayoutChange, onToggleStats, onFocus, onToggleFloat, onToggleFullscreen,
   onToggleVoice, onToggleShareAudio, onTogglePicture, onVolumeChange, renderMedia,
 }: ShareViewerProps) {
   const t = useI18n();
@@ -138,6 +140,12 @@ export function ShareViewer({
             <span>{t('view.fullscreen')}</span>
           </button>
         </div>
+        {!floating && (
+          <button type="button" className="share-viewer__button share-viewer__stats-toggle" data-viewer-action="show-stats"
+            aria-pressed={showStats} onClick={onToggleStats}>
+            {t('view.showStats')}
+          </button>
+        )}
       </div>
       {modeError && <p className="share-viewer__error" role="alert">{modeError}</p>}
       {floating ? (

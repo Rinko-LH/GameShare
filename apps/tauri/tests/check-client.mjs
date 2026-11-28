@@ -437,6 +437,8 @@ try {
   const shareAudioControl = `${secondPeer} ${control('share-audio')}`;
   const pictureControl = `${secondPeer} ${control('picture')}`;
   const fullscreenControl = control('fullscreen');
+  const statsControl = control('show-stats');
+  const viewerStatsCount = () => hostEval(`document.querySelectorAll('${viewer} .tile__footer').length`);
   await until(async () => await decodedShares(hostEval) === 3, 'all three shares decoded in the main viewer');
   assert.equal(await selectedPeer(hostEval), firstPeerId, 'New shares must preserve current focus');
   const firstSender = guests[0].evaluate;
@@ -451,6 +453,9 @@ try {
   await click(hostEval, control('layout-grid'));
   assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'grid');
   await until(async () => await decodedShares(hostEval) === 3, 'grid displays all live shares');
+  assert.equal(await viewerStatsCount(), 0, 'Stream stats are hidden by default');
+  await click(hostEval, statsControl);
+  await until(async () => await viewerStatsCount() === 3, 'one switch shows stats for every grid tile');
   await screenshot(hostEval, 'viewer-grid');
   await clickScreenPoint(hostEval, `${secondPeer} .share-viewer__picture ${control('focus')}`);
   assert.equal(await hostEval(`${query(viewer)}.dataset.layout`), 'focus');
@@ -521,12 +526,15 @@ try {
   }
   if (!captureTitle) await until(() => firstSenderHasThumbnailLinks(1), 'fullscreen focus keeps the thumbnail limits');
   await until(() => hostEval(`${query('.share-viewer__toolbar')}.getClientRects().length === 0`), 'fullscreen hides the viewer toolbar');
+  assert.equal(await viewerStatsCount(), 1, 'Fullscreen honors the stats switch without adding stats to thumbnails');
   await screenshot(hostEval, 'viewer-fullscreen');
   await pressKey(hostEval, 'Escape', 27);
   await until(() => hostEval(`document.fullscreenElement === null &&
     innerWidth === ${normalBounds[0]} && innerHeight === ${normalBounds[1]} &&
     ${query('.share-viewer__toolbar')}.getClientRects().length > 0`), 'Escape restores the normal window and toolbar');
   assert.equal(await selectedPeer(hostEval), secondPeerId, 'Fullscreen round trip must preserve selection');
+  await click(hostEval, statsControl);
+  await until(async () => await viewerStatsCount() === 0, 'the stats switch hides the footer again');
   console.log('PASS: layouts, fullscreen, local mutes, and incoming share RTP pause with voice retained');
 
   const floatWindows = async () => (await host.list()).filter((entry) => entry.url.includes('floatTile='));

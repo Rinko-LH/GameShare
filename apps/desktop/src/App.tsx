@@ -317,6 +317,7 @@ export default function App() {
   /** 被放大到主画面的那一路；null 表示网格布局 */
   const [focusedPeerId, setFocusedPeerId] = useState<string | null>(null);
   const [viewerLayout, setViewerLayout] = useState<'focus' | 'grid'>('focus');
+  const [showViewerStats, setShowViewerStats] = useState(false);
   const [viewerFocus, setViewerFocus] = useState<string | null>(null);
 
   const {
@@ -347,6 +348,7 @@ export default function App() {
   useEffect(() => {
     if (!isTauri || inRoom) return;
     setViewerLayout('focus');
+    setShowViewerStats(false);
     setViewerFocus(null);
     setPeerAudio({});
     setViewError(null);
@@ -1114,6 +1116,7 @@ export default function App() {
       onToggleFocus={viewer ? undefined : () => toggleFocus(peer.peerId)}
       variant={variant}
       viewer={viewer}
+      showStats={!viewer || showViewerStats}
     />
   );
 
@@ -1904,6 +1907,7 @@ export default function App() {
             <ShareViewer
               participants={viewerParticipants}
               layout={viewerLayout}
+              showStats={showViewerStats}
               focusedPeerId={activeViewerFocus}
               floating={isFloat}
               fullscreen={stageFullscreen}
@@ -1922,6 +1926,7 @@ export default function App() {
                 </div>
               }
               onLayoutChange={setViewerLayout}
+              onToggleStats={() => setShowViewerStats((visible) => !visible)}
               onFocus={(peerId) => {
                 setViewerFocus(peerId);
                 setViewerLayout('focus');
@@ -2023,6 +2028,7 @@ interface VideoTileProps {
   onToggleFocus?: () => void;
   variant: TileVariant;
   viewer?: boolean;
+  showStats?: boolean;
 }
 
 function VideoTile({
@@ -2045,6 +2051,7 @@ function VideoTile({
   onToggleFocus,
   variant,
   viewer,
+  showStats = true,
 }: VideoTileProps) {
   const t = useI18n();
   const ref = useRef<HTMLVideoElement | null>(null);
@@ -2261,7 +2268,7 @@ function VideoTile({
         )}
       </div>}
 
-      {!compact && (
+      {showStats && !compact && (
         <div className="tile__footer">
           <div className="tile__statuses">
             {self ? <span className="tile__status">{t('tile.tagLocal')}</span> : <>

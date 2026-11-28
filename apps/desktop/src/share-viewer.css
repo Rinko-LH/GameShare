@@ -25,6 +25,7 @@
 }
 
 .share-viewer__toolbar[hidden] { display: none; }
+.share-viewer__stats-toggle { margin-inline-start: auto; border-color: var(--border); }
 
 .share-viewer__layout,
 .share-viewer__modes,
