@@ -643,10 +643,7 @@ export default function App() {
   const copyInvite = useCallback(async (): Promise<void> => {
     if (!room || !validInviteAddress) return;
     const code = createInvitation(validInviteAddress, room.roomCode, connectionConfig);
-    const text = [
-      '一起玩 GameShare！选择“加入房间”，粘贴下面的完整邀请。信令和音视频配置会自动读取；如需媒体 IP，请选择你自己电脑的地址，再点“连接并加入”：',
-      code,
-    ].join('\n');
+    const text = `${t('room.inviteInstructions')}\n${code}`;
     const copied = await writeClipboard(text);
     setInviteCopyStatus(copied ? 'copied' : 'failed');
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
@@ -656,7 +653,7 @@ export default function App() {
     } else {
       session.pushLog('邀请复制失败，请重试');
     }
-  }, [room, validInviteAddress, connectionConfig, session, writeClipboard]);
+  }, [room, validInviteAddress, connectionConfig, session, t, writeClipboard]);
 
   // All invitation entry points share policy validation before opening any connection.
   const joinModeInvitation = useCallback(async (text: string) => {
