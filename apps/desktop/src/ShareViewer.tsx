@@ -148,7 +148,8 @@ export function ShareViewer({
         {!floating && (
           <button type="button" className="share-viewer__button share-viewer__stats-toggle" data-viewer-action="show-stats"
             aria-pressed={showStats} onClick={onToggleStats}>
-            {t('view.showStats')}
+            <ViewerIcon name="stats" />
+            <span>{t('view.showStats')}</span>
           </button>
         )}
       </div>
